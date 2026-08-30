@@ -7,9 +7,9 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
       args:
-        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
-        DEBIAN_MIRROR_ORIGIN: ${DEBIAN_MIRROR_ORIGIN:-http://mirrors.aliyun.com}
-        TOKEN_TALK_BASE_PATH: ${TOKEN_TALK_BASE_PATH:-/}
+        NODE_IMAGE: ${TOKEN_TALK_BUILD_NODE_IMAGE:-node:22-alpine}
+        ALPINE_MIRROR: ${ALPINE_MIRROR:-http://mirrors.cloud.aliyuncs.com/alpine}
+        APP_BASE_PATH: ${TOKEN_TALK_BASE_PATH:-/}
     container_name: token_talk_prod
     restart: unless-stopped
     environment:
@@ -55,7 +55,7 @@ services:
       - studio
 
   newsnow:
-    image: ${NEWSNOW_IMAGE:-ghcr.io/ourongxing/newsnow:v0.0.39}
+    image: ${NEWSNOW_IMAGE:-ghcr.io/ourongxing/newsnow@sha256:98b62bd971d308040937fdfde5263a00715b357894936e88b3ce3c0d8adbf55a}
     container_name: token_talk_newsnow
     restart: unless-stopped
     environment:
@@ -71,7 +71,7 @@ services:
       - studio
 
   dailyhot:
-    image: ${DAILYHOT_IMAGE:-imsyy/dailyhot-api:v2.0.8}
+    image: ${DAILYHOT_IMAGE:-imsyy/dailyhot-api@sha256:748fc79d29a422f512018e8a58ef1a0e20306dd6254637933960573fa37b1e5e}
     container_name: token_talk_dailyhot
     restart: unless-stopped
     environment:

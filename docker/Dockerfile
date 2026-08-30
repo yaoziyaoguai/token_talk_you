@@ -1,9 +1,8 @@
-ARG NODE_IMAGE=node:22-bookworm-slim
+ARG NODE_IMAGE=node:22-alpine
 
 FROM ${NODE_IMAGE} AS builder
 
-ARG TOKEN_TALK_BASE_PATH=/
-ENV TOKEN_TALK_BASE_PATH=${TOKEN_TALK_BASE_PATH}
+ARG APP_BASE_PATH=/
 
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
@@ -17,11 +16,11 @@ COPY packages/workflow/package.json packages/workflow/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN pnpm build
+RUN TOKEN_TALK_BASE_PATH="$APP_BASE_PATH" pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 
-ARG DEBIAN_MIRROR_ORIGIN=http://deb.debian.org
+ARG ALPINE_MIRROR
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
@@ -29,12 +28,12 @@ ENV NODE_ENV=production \
     TOKEN_TALK_CONTAINER_BIND=1 \
     TOKEN_TALK_WORKSPACE=/data/token-talk
 
-RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR_ORIGIN}|g" /etc/apt/sources.list.d/debian.sources \
-    && apt-get -o Acquire::ForceIPv4=true update \
-    && apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends ca-certificates espeak-ng ffmpeg tini util-linux \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 1001 token-talk \
-    && useradd --system --uid 1001 --gid token-talk --home-dir /app token-talk \
+RUN if [ -n "$ALPINE_MIRROR" ]; then \
+      sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_MIRROR%/}|g" /etc/apk/repositories; \
+    fi \
+    && apk add --no-cache ca-certificates espeak-ng ffmpeg flock tini \
+    && addgroup --system --gid 1001 token-talk \
+    && adduser --system --uid 1001 --ingroup token-talk --home /app token-talk \
     && mkdir -p /data/token-talk \
     && chown -R token-talk:token-talk /data/token-talk
 
@@ -52,5 +51,5 @@ VOLUME ["/data/token-talk"]
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=6 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:4311/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "apps/studio/dist/server/main.js"]

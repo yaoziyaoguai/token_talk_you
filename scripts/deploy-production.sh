@@ -58,6 +58,48 @@ wait_for_app() {
   return 1
 }
 
+verify_local_images() {
+  local image images
+  images="$("${compose[@]}" config --images)"
+  [[ -n "$images" ]] || { echo "Compose 未解析出生产镜像。" >&2; return 1; }
+  while IFS= read -r image; do
+    [[ -n "$image" ]] || continue
+    docker image inspect "$image" >/dev/null
+  done <<< "$images"
+}
+
+validate_supporting_image_refs() {
+  local image images
+  images="$("${compose[@]}" config --format json | node -e '
+    let source = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { source += chunk; });
+    process.stdin.on("end", () => {
+      const config = JSON.parse(source);
+      for (const serviceName of ["newsnow", "dailyhot"]) {
+        const image = config.services?.[serviceName]?.image;
+        if (typeof image !== "string" || image.length === 0) process.exitCode = 1;
+        else process.stdout.write(`${image}\n`);
+      }
+    });
+  ')"
+  while IFS= read -r image; do
+    [[ -n "$image" ]] || continue
+    if [[ ! "$image" =~ @sha256:[0-9a-f]{64}$ ]]; then
+      echo "生产辅助镜像必须固定到 SHA-256 digest：$image" >&2
+      return 1
+    fi
+  done <<< "$images"
+}
+
+prepare_images() {
+  validate_supporting_image_refs
+  "${compose[@]}" build app
+  # Compose 会跳过本地已有的 digest，只访问真正缺失的热点镜像。
+  "${compose[@]}" pull --policy missing newsnow dailyhot
+  verify_local_images
+}
+
 previous_image="$(docker inspect --format='{{.Image}}' "$container" 2>/dev/null || true)"
 previous_broker_release="$(readlink -f "$broker_root/current" 2>/dev/null || true)"
 deployment_mutated=0
@@ -75,7 +117,7 @@ rollback() {
   fi
   if [[ -n "$previous_image" ]]; then
     docker tag "$previous_image" token-talk:candidate || failed=1
-    "${compose[@]}" up --detach --no-deps --force-recreate app || failed=1
+    "${compose[@]}" up --detach --no-deps --force-recreate --pull never app || failed=1
     wait_for_app || failed=1
   else
     echo "没有可恢复的应用镜像。" >&2
@@ -117,8 +159,7 @@ install_broker_release() {
 }
 
 check_codex_upstream
-"${compose[@]}" build app
-"${compose[@]}" pull newsnow dailyhot
+prepare_images
 "$repository_root/scripts/backup-production.sh"
 
 if [[ -n "$previous_image" ]]; then
@@ -133,7 +174,7 @@ if ! wait_for_broker; then
   exit 1
 fi
 
-"${compose[@]}" up --detach --remove-orphans --force-recreate
+"${compose[@]}" up --detach --remove-orphans --force-recreate --pull never
 if ! wait_for_app; then
   "${compose[@]}" ps || true
   "${compose[@]}" logs --tail=180 app || true

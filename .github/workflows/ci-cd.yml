@@ -36,24 +36,48 @@ jobs:
       - run: pnpm test:e2e
       - run: bash -n scripts/backup-production.sh scripts/deploy-production.sh scripts/setup-codex-broker-host.sh scripts/smoke-production-build.sh
       - run: docker compose --env-file .env.prod.example -f docker/docker-compose.prod.yml config --quiet
-      - run: docker build --file docker/Dockerfile --tag token-talk:ci .
+      - name: Build the production image
+        run: |
+          docker build \
+            --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:22-alpine \
+            --build-arg APP_BASE_PATH=/token-talk/ \
+            --file docker/Dockerfile \
+            --tag token-talk:ci \
+            .
       - name: Smoke test the production image
         run: |
           set -Eeuo pipefail
+          proxy_pid=""
           docker run --detach --rm --name token-talk-ci \
             --publish 127.0.0.1:4329:4311 \
             --env TOKEN_TALK_PUBLIC_ORIGIN=https://podcast.example.com \
             --env TOKEN_TALK_RESEARCH_USER_AGENT='TokenTalk-CI/0.1 (ci@example.com)' \
             token-talk:ci
-          trap 'docker stop token-talk-ci >/dev/null 2>&1 || true' EXIT
+          TOKEN_TALK_PROXY_UPSTREAM=http://127.0.0.1:4329 \
+            TOKEN_TALK_PROXY_BASE_PATH=/token-talk/ \
+            TOKEN_TALK_PROXY_PORT=4330 \
+            node scripts/smoke-subpath-proxy.mjs &
+          proxy_pid="$!"
+          trap 'kill "$proxy_pid" >/dev/null 2>&1 || true; docker stop token-talk-ci >/dev/null 2>&1 || true' EXIT
+          ready=0
           for _ in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:4329/api/health >/dev/null; then
-              exit 0
+            if curl --fail --silent http://127.0.0.1:4330/token-talk/api/health >/dev/null; then
+              ready=1
+              break
             fi
             sleep 2
           done
-          docker logs token-talk-ci
-          exit 1
+          if [[ "$ready" -ne 1 ]]; then
+            docker logs token-talk-ci
+            exit 1
+          fi
+          index="$(curl --fail --silent --show-error http://127.0.0.1:4330/token-talk/)"
+          printf '%s' "$index" | grep --quiet 'Token Talk Studio'
+          asset_path="$(printf '%s' "$index" | grep --only-matching '/token-talk/assets/[^" ]*\.js' | head -n 1)"
+          [[ -n "$asset_path" ]] || { echo '未找到带 /token-talk/ 前缀的入口脚本。' >&2; exit 1; }
+          headers="$(mktemp)"
+          curl --fail --silent --show-error --dump-header "$headers" --output /dev/null "http://127.0.0.1:4330$asset_path"
+          grep --ignore-case --extended-regexp --quiet '^content-type: (text|application)/javascript' "$headers"
 
   security:
     name: Production dependency audit
@@ -77,6 +101,15 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment: production
     steps:
+      - name: Validate deployment trust anchors
+        env:
+          SERVER_FINGERPRINT: ${{ secrets.SERVER_FINGERPRINT }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$SERVER_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || {
+            echo 'SERVER_FINGERPRINT is missing or invalid.' >&2
+            exit 1
+          }
       - name: Deploy with health checks and rollback
         uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f
         env:
@@ -86,6 +119,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          fingerprint: ${{ secrets.SERVER_FINGERPRINT }}
           command_timeout: 45m
           envs: PROJECT_PATH,PUBLIC_HEALTH_URL
           script: |
