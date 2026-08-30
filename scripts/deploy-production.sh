@@ -112,10 +112,15 @@ preserve_previous_app() {
   if docker image inspect "$previous_image" >/dev/null 2>&1; then
     docker tag "$previous_image" token-talk:rollback
   else
-    echo "上一版本镜像仅存在于运行容器，正在固化回滚快照。"
-    docker commit "$container" token-talk:rollback >/dev/null
+    echo "上一版本镜像仅存在于运行容器，正在导出无密钥回滚快照。"
+    "$repository_root/scripts/create-rollback-image.sh" "$container" token-talk:rollback
   fi
   docker image inspect token-talk:rollback >/dev/null
+  if docker image inspect token-talk:rollback --format '{{json .Config.Env}}' \
+    | grep -Eq 'ELEVENLABS_API_KEY|DASHSCOPE_API_KEY|ARK_API_KEY'; then
+    echo "回滚镜像包含受保护的 API 配置，拒绝发布。" >&2
+    return 1
+  fi
 }
 
 rollback() {
@@ -187,7 +192,7 @@ if ! wait_for_broker; then
   exit 1
 fi
 
-"${compose[@]}" up --detach --remove-orphans --force-recreate --pull never
+"${compose[@]}" up --detach --no-deps --force-recreate --pull never app
 if ! wait_for_app; then
   "${compose[@]}" ps || true
   "${compose[@]}" logs --tail=180 app || true

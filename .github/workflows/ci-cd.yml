@@ -34,7 +34,7 @@ jobs:
       - run: bash scripts/smoke-production-build.sh
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
-      - run: bash -n scripts/backup-production.sh scripts/deploy-production.sh scripts/setup-codex-broker-host.sh scripts/smoke-production-build.sh deploy/certbot/token-talk-ip-deploy-hook.sh
+      - run: bash -n scripts/backup-production.sh scripts/create-rollback-image.sh scripts/deploy-production.sh scripts/setup-codex-broker-host.sh scripts/smoke-production-build.sh deploy/certbot/token-talk-ip-deploy-hook.sh
       - run: docker compose --env-file .env.prod.example -f docker/docker-compose.prod.yml config --quiet
       - name: Validate Nginx ingress config
         run: |
@@ -101,6 +101,41 @@ jobs:
           archive="$(find "$backup_root" -maxdepth 1 -type f -name 'token-talk-*.tar.gz' -print -quit)"
           [[ -n "$archive" ]] || { echo '备份脚本未生成归档。' >&2; exit 1; }
           tar -tzf "$archive" | grep --fixed-strings --line-regexp --quiet './probe.txt'
+      - name: Smoke test the secret-free rollback image
+        run: |
+          set -Eeuo pipefail
+          source_container=token-talk-ci-rollback-source
+          rollback_container=token-talk-ci-rollback-app
+          rollback_image=token-talk:ci-rollback
+          cleanup() {
+            docker rm --force --volumes "$source_container" "$rollback_container" >/dev/null 2>&1 || true
+            docker image rm "$rollback_image" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --name "$source_container" \
+            --env ELEVENLABS_API_KEY=must-not-leak \
+            --env DASHSCOPE_API_KEY=must-not-leak \
+            --env ARK_API_KEY=must-not-leak \
+            --entrypoint sh token-talk:ci -c 'sleep 300' >/dev/null
+          bash scripts/create-rollback-image.sh "$source_container" "$rollback_image"
+          docker rm --force --volumes "$source_container" >/dev/null
+          docker run --detach --name "$rollback_container" \
+            --publish 127.0.0.1:4330:4311 \
+            --env TOKEN_TALK_PUBLIC_ORIGIN=https://182.92.85.15 \
+            --env TOKEN_TALK_RESEARCH_USER_AGENT='TokenTalk-CI/0.1 (ci@example.com)' \
+            "$rollback_image" >/dev/null
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4330/api/health >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" -ne 1 ]]; then
+            docker logs "$rollback_container"
+            exit 1
+          fi
 
   security:
     name: Production dependency audit
