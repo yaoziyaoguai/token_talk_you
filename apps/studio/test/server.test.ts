@@ -51,6 +51,25 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+function agentLoopCandidate(id: string) {
+  return EpisodeCandidateSchema.parse({
+    id,
+    origin: "custom",
+    title: "Agent Loop 自动恢复测试",
+    hook: "验证零成本 Agent 中断后可以自动接续。",
+    rationale: "服务级自动恢复回归测试。",
+    category: "other",
+    platform: "测试编辑部",
+    suggestedRoles: ["主持", "事实编辑"],
+    verdict: "rapid_brief",
+    targetMinutes: { min: 15, max: 25 },
+    score: { overall: 80, audienceRelevance: 80, conversationPotential: 80, evidenceDepth: 80, longformDepth: 70, freshness: 50, seriesFit: 80, feasibility: 90, risk: 10 },
+    evidence: [],
+    verification: { status: "ready", reason: "测试资料已齐备", independentSources: 2 },
+    generatedAt: NOW,
+  });
+}
+
 describe("Studio API", () => {
   it("reports configured production services from runtime state", async () => {
     const app = await createStudioServer({
@@ -942,6 +961,28 @@ describe("Studio API", () => {
     await app.close();
   });
 
+  it("accepts an HTTPS public IP as the exact production origin", async () => {
+    const app = await createStudioServerBase({
+      workspaceRoot: root,
+      now: () => NOW,
+      mutationToken: TEST_MUTATION_TOKEN,
+      publicOrigin: "https://182.92.85.15",
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: {
+        host: "182.92.85.15",
+        origin: "https://182.92.85.15",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    await app.close();
+  });
+
   it("serves the production client with SPA fallback without swallowing API 404s", async () => {
     const clientRoot = join(root, "client");
     await mkdir(join(clientRoot, "assets"), { recursive: true });
@@ -1402,7 +1443,210 @@ describe("Studio API", () => {
     const response = await app.inject({ method: "POST", url: "/api/runs/run-deep-reading/agent-loop" });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ reason: "failed", executedNodeIds: ["evidence-audit"] });
+    expect(response.json()).toMatchObject({ reason: "continue_available_work", executedNodeIds: ["evidence-audit"] });
+    expect(execute).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("automatically resumes a failed zero-cost Agent node on the next loop request", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-agent-recovery");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-agent-recovery",
+      opportunityId: "opportunity-agent-recovery",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.status = "failed";
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes.find((node) => node.id === "episode-opportunity")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "research-plan")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "source-packet")!.status = "succeeded";
+    const claims = run.nodes.find((node) => node.id === "claim-ledger");
+    if (!claims) throw new Error("claim ledger missing");
+    claims.status = "failed";
+    claims.lastError = "浏览器连接已中断，执行已请求取消";
+    run.executionReceipts = [{
+      id: "receipt-claims-cancelled",
+      nodeId: claims.id,
+      providerId: "openai-codex-subscription",
+      modelId: "codex-test",
+      status: "failed",
+      billing: "subscription",
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      errorMessage: claims.lastError,
+    }];
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn(async ({ node }: NodeExecutionContext) => ({
+      status: "succeeded" as const,
+      providerId: "openai-codex-subscription",
+      modelId: "codex-test",
+      billing: "subscription" as const,
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      outputs: { [node.outputArtifactIds[0]!]: { status: "verified", claims: [] } },
+    }));
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+
+    const response = await app.inject({ method: "POST", url: "/api/runs/run-agent-recovery/agent-loop" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      reason: "continue_available_work",
+      executedNodeIds: ["claim-ledger"],
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect((await repository.load()).runs.find((item) => item.id === run.id)?.nodes.find((node) => node.id === claims.id)?.status).toBe("succeeded");
+    await app.close();
+  });
+
+  it("stops automatic failed-node recovery after three failed or rejected attempts", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-agent-recovery-limit");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-agent-recovery-limit",
+      opportunityId: "opportunity-agent-recovery-limit",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.status = "failed";
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes.find((node) => node.id === "episode-opportunity")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "research-plan")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "source-packet")!.status = "succeeded";
+    const claims = run.nodes.find((node) => node.id === "claim-ledger");
+    if (!claims) throw new Error("claim ledger missing");
+    claims.status = "failed";
+    claims.lastError = "upstream unavailable";
+    run.executionReceipts = Array.from({ length: 3 }, (_, index) => ({
+      id: `receipt-claims-failed-${index + 1}`,
+      nodeId: claims.id,
+      providerId: "openai-codex-subscription",
+      modelId: "codex-test",
+      status: index === 0 ? "failed" as const : "rejected" as const,
+      billing: "subscription" as const,
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      errorMessage: claims.lastError,
+    }));
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn();
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+
+    const response = await app.inject({ method: "POST", url: "/api/runs/run-agent-recovery-limit/agent-loop" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      reason: "repair_limit",
+      stoppedAtNodeId: "claim-ledger",
+      executedNodeIds: [],
+    });
+    expect(execute).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("prioritizes the dedicated research repair and never bypasses an unresolved repair", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-research-repair-recovery");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-research-repair-recovery",
+      opportunityId: "opportunity-research-repair-recovery",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.status = "failed";
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes.find((node) => node.id === "episode-opportunity")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "research-plan")!.status = "succeeded";
+    const source = run.nodes.find((node) => node.id === "source-packet");
+    const repair = run.nodes.find((node) => node.id === "research-repair");
+    if (!source || !repair) throw new Error("research loop nodes missing");
+    source.status = "failed";
+    source.lastError = "retrieval timed out";
+    repair.status = "failed";
+    repair.lastError = "repair Agent interrupted";
+    run.executionReceipts = [
+      {
+        id: "receipt-source-failed",
+        nodeId: source.id,
+        providerId: "free-research",
+        modelId: "search-test",
+        status: "failed",
+        billing: "free",
+        estimatedCostCny: 0,
+        actualCostCny: 0,
+        startedAt: NOW,
+        finishedAt: NOW,
+        errorMessage: source.lastError,
+      },
+      {
+        id: "receipt-repair-failed",
+        nodeId: repair.id,
+        providerId: "openai-codex-subscription",
+        modelId: "codex-test",
+        status: "failed",
+        billing: "subscription",
+        estimatedCostCny: 0,
+        actualCostCny: 0,
+        startedAt: NOW,
+        finishedAt: NOW,
+        errorMessage: repair.lastError,
+      },
+    ];
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn(async ({ node }: NodeExecutionContext) => ({
+      status: "succeeded" as const,
+      providerId: "openai-codex-subscription",
+      modelId: "codex-test",
+      billing: "subscription" as const,
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      outputs: { [node.outputArtifactIds[0]!]: { status: "ready", queries: [{ query: "repaired query" }] } },
+    }));
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+
+    const response = await app.inject({ method: "POST", url: "/api/runs/run-research-repair-recovery/agent-loop" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().executedNodeIds).toEqual(["research-repair"]);
+    expect(execute).toHaveBeenCalledOnce();
+
+    const unresolvedSnapshot = await repository.load();
+    const unresolvedRun = unresolvedSnapshot.runs.find((item) => item.id === run.id)!;
+    unresolvedRun.status = "failed";
+    unresolvedRun.nodes.find((node) => node.id === source.id)!.status = "failed";
+    unresolvedRun.nodes.find((node) => node.id === repair.id)!.status = "needs_human";
+    await repository.save(unresolvedSnapshot);
+
+    const unresolvedResponse = await app.inject({ method: "POST", url: "/api/runs/run-research-repair-recovery/agent-loop" });
+
+    expect(unresolvedResponse.statusCode).toBe(200);
+    expect(unresolvedResponse.json()).toMatchObject({
+      reason: "requires_input",
+      stoppedAtNodeId: "research-repair",
+      executedNodeIds: [],
+    });
     expect(execute).toHaveBeenCalledOnce();
     await app.close();
   });

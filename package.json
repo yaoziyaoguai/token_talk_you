@@ -9,7 +9,8 @@
     "build": "pnpm -r --if-present build",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:production": "playwright test --config playwright.production.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

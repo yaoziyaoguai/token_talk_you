@@ -820,7 +820,8 @@ export class StudioService {
       const snapshot = await this.repository.load();
       const run = snapshot.runs.find((candidate) => candidate.id === runId);
       if (!run) throw new StudioNotFoundError(`Run '${runId}' was not found`);
-      const availableNodes = run.nodes.filter((candidate) => candidate.status === "ready" || candidate.status === "stale");
+      const availableNodes = run.nodes.filter((candidate) =>
+        candidate.status === "ready" || candidate.status === "stale" || candidate.status === "failed");
       if (availableNodes.length === 0) return {
         run,
         executedNodeIds,
@@ -830,6 +831,23 @@ export class StudioService {
       let selectedNode: WorkflowRun["nodes"][number] | undefined;
       let blocker: Pick<AgentLoopResult, "stoppedAtNodeId" | "reason"> | undefined;
       for (const candidate of availableNodes) {
+        if (candidate.status === "failed") {
+          const dedicatedRepair = candidate.id === "source-packet"
+            ? run.nodes.find((node) => node.id === "research-repair")
+            : undefined;
+          if (dedicatedRepair && dedicatedRepair.status !== "succeeded") {
+            if (dedicatedRepair.status === "needs_human") {
+              blocker ??= { stoppedAtNodeId: dedicatedRepair.id, reason: "requires_input" };
+            } else if (dedicatedRepair.status !== "ready" && dedicatedRepair.status !== "stale" && dedicatedRepair.status !== "failed") {
+              blocker ??= { stoppedAtNodeId: dedicatedRepair.id, reason: "failed" };
+            }
+            continue;
+          }
+          if (failedAttempts(run, candidate.id) >= 3) {
+            blocker ??= { stoppedAtNodeId: candidate.id, reason: "repair_limit" };
+            continue;
+          }
+        }
         if (isBoundedAgentLoop(candidate.capability) && boundedLoopAttempts(run, candidate) >= boundedLoopLimit(candidate)) {
           blocker ??= { stoppedAtNodeId: candidate.id, reason: "repair_limit" };
           continue;
@@ -862,7 +880,13 @@ export class StudioService {
         const hasAutomaticRepair = selectedNode.id === "source-packet"
           && updated.nodes.some((candidate) => candidate.id === "research-repair" && candidate.status === "ready");
         if (!hasAutomaticRepair) {
-          return { run: updated, executedNodeIds, stoppedAtNodeId: selectedNode.id, reason: "failed" };
+          const repairLimitReached = failedAttempts(updated, selectedNode.id) >= 3;
+          return {
+            run: updated,
+            executedNodeIds,
+            stoppedAtNodeId: selectedNode.id,
+            reason: repairLimitReached ? "repair_limit" : "continue_available_work",
+          };
         }
       }
       if (updatedNode?.status === "needs_human") {
@@ -947,9 +971,14 @@ function completedAttempts(run: WorkflowRun, nodeId: string): number {
   return run.executionReceipts.filter((receipt) => receipt.nodeId === nodeId && receipt.status === "succeeded").length;
 }
 
+function failedAttempts(run: WorkflowRun, nodeId: string): number {
+  return run.executionReceipts.filter((receipt) =>
+    receipt.nodeId === nodeId && (receipt.status === "failed" || receipt.status === "rejected")).length;
+}
+
 function boundedLoopAttempts(run: WorkflowRun, node: WorkflowRun["nodes"][number]): number {
   if (node.capability === "research.search") {
-    return run.executionReceipts.filter((receipt) => receipt.nodeId === node.id && receipt.status === "failed").length;
+    return failedAttempts(run, node.id);
   }
   return completedAttempts(run, node.id);
 }
