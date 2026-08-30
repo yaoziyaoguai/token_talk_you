@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react()],
+  base: process.env.TOKEN_TALK_BASE_PATH?.trim() || "/",
   server: {
     port: 4310,
     strictPort: true,

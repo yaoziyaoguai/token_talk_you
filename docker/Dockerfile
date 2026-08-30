@@ -2,6 +2,9 @@ ARG NODE_IMAGE=node:22-bookworm-slim
 
 FROM ${NODE_IMAGE} AS builder
 
+ARG TOKEN_TALK_BASE_PATH=/
+ENV TOKEN_TALK_BASE_PATH=${TOKEN_TALK_BASE_PATH}
+
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
 

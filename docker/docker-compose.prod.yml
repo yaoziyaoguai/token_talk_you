@@ -8,6 +8,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+        TOKEN_TALK_BASE_PATH: ${TOKEN_TALK_BASE_PATH:-/}
     container_name: token_talk_prod
     restart: unless-stopped
     environment:

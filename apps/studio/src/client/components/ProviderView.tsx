@@ -2,7 +2,7 @@ import type { ProviderProfile } from "@token-talk/domain";
 import type { MusicAsset, StudioBootstrap, VoiceCatalog } from "../../shared/api.js";
 import { ChevronDown, Headphones, LibraryBig, LoaderCircle, Mic2, Music2, Plus, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
-import { StudioApi } from "../api.js";
+import { StudioApi, studioPath } from "../api.js";
 
 const jobs = [
   { label: "资料研究", capability: "research.search" },
@@ -125,7 +125,7 @@ export function ProviderView({ data }: { data: StudioBootstrap }) {
             {musicAssets.map((asset) => <article key={asset.id}>
               <div className="music-asset-index"><Music2 size={16} /></div>
               <div className="music-asset-copy"><strong>{asset.title}</strong><span>{moodLabel(asset.mood)} · 能量 {asset.energy}{asset.bpm ? ` · ${asset.bpm} BPM` : ""}</span><small>{licenseLabel(asset.license.basis)} · {formatFileSize(asset.bytes)}</small></div>
-              <audio aria-label={`试听：${asset.title}`} controls preload="none" src={asset.mediaUrl}>当前浏览器无法播放音频。</audio>
+              <audio aria-label={`试听：${asset.title}`} controls preload="none" src={studioPath(asset.mediaUrl)}>当前浏览器无法播放音频。</audio>
             </article>)}
             {!musicLoading && musicAssets.length === 0 ? <div className="music-empty"><Music2 size={20} /><span><strong>还没有可用音乐</strong><small>Cue 会默认选择留白，不会调用来源不明的音乐。</small></span></div> : null}
           </div>

@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 import { SeriesBibleSchema } from "@token-talk/domain/model";
 import {
   AdoptCandidateResponseSchema,
@@ -39,6 +41,15 @@ const EXECUTION_TIMEOUT_MS = 15 * 60_000 + 15_000;
 const MAX_API_RESPONSE_BYTES = 8 * 1024 * 1024;
 let mutationToken: string | undefined;
 
+const studioBasePath = import.meta.env.BASE_URL === "/"
+  ? ""
+  : import.meta.env.BASE_URL.replace(/\/$/, "");
+
+export function studioPath(path: string): string {
+  if (!path.startsWith("/")) throw new Error("Studio path must start with /");
+  return `${studioBasePath}${path}`;
+}
+
 async function request(input: RequestInfo | URL, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<{ response: Response; body: unknown }> {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -48,7 +59,8 @@ async function request(input: RequestInfo | URL, init?: RequestInit, timeoutMs =
     headers.set("x-token-talk-token", mutationToken);
   }
   try {
-    const response = await fetch(input, { ...init, headers, signal: controller.signal });
+    const target = typeof input === "string" && input.startsWith("/") ? studioPath(input) : input;
+    const response = await fetch(target, { ...init, headers, signal: controller.signal });
     const text = await readBoundedResponse(response, MAX_API_RESPONSE_BYTES);
     let body: unknown;
     try {

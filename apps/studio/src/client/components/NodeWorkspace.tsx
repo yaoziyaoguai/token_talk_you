@@ -2,7 +2,7 @@ import type { ExecuteNodeInput, NodeExecutionPreview, RegisterCoverMetadata, Reg
 import type { Artifact, ArtifactVersion, WorkflowNode } from "@token-talk/domain/model";
 import { BadgeCheck, ChevronDown, Download, ExternalLink, FileAudio, FileClock, ImagePlus, LoaderCircle, LockKeyhole, Music2, Play, RotateCw, Save, SearchCheck, ShieldCheck, SlidersHorizontal, Upload, WalletCards, Waypoints } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
-import { StudioApi } from "../api.js";
+import { StudioApi, studioPath } from "../api.js";
 import { CastPlanEditor, EpisodeBlueprintEditor, ReleaseCopyEditor, ResearchPlanEditor, ScriptTranscriptEditor } from "./EditorialArtifactEditors.js";
 
 interface NodeWorkspaceProps {
@@ -681,7 +681,7 @@ function VisualPackWorkbench({ value, briefSaving, readOnly, onSaveBrief, onRegi
     {covers.length > 0 ? <div className="cover-candidate-grid">{covers.map((cover) => {
       const coverId = String(cover.id ?? "");
       const selected = coverId === selectedCoverId;
-      return <figure className={selected ? "selected" : ""} key={coverId || String(cover.mediaUrl)}><img src={String(cover.mediaUrl)} alt={String(cover.altText ?? "单集封面候选")} /><figcaption><span><strong>{Number(cover.width)}×{Number(cover.height)}</strong><small>{String(cover.altText ?? "已登记封面")}</small></span><button className={selected ? "cover-selected-command" : "secondary-command"} type="button" disabled={selected || !onSelect || selectingId === coverId} onClick={() => void selectCover(coverId)}>{selected ? <><BadgeCheck size={14} />发行封面</> : selectingId === coverId ? "选择中" : "设为发行封面"}</button></figcaption></figure>;
+      return <figure className={selected ? "selected" : ""} key={coverId || String(cover.mediaUrl)}><img src={studioPath(String(cover.mediaUrl))} alt={String(cover.altText ?? "单集封面候选")} /><figcaption><span><strong>{Number(cover.width)}×{Number(cover.height)}</strong><small>{String(cover.altText ?? "已登记封面")}</small></span><button className={selected ? "cover-selected-command" : "secondary-command"} type="button" disabled={selected || !onSelect || selectingId === coverId} onClick={() => void selectCover(coverId)}>{selected ? <><BadgeCheck size={14} />发行封面</> : selectingId === coverId ? "选择中" : "设为发行封面"}</button></figcaption></figure>;
     })}</div> : null}
     {onRegister ? <form onSubmit={(event) => void submit(event)}>
       <label className="release-file-picker"><span><Upload size={16} />{file ? file.name : "选择 JPG 或 PNG"}</span><small>正方形 1400–3000px，不含透明通道</small><input key={fileInputKey} aria-label="选择单集封面" type="file" accept="image/jpeg,image/png,.jpg,.jpeg,.png" onChange={(event) => setFile(event.target.files?.[0])} /></label>
@@ -711,7 +711,7 @@ function PublishPackagePreview({ runId, value, available, records, onRegister, o
   const chapters = asArray(data.chapters);
   const sources = asArray(data.sources);
   if (data.releaseReady === true && available) return <div className="publish-package-stack">
-    <div className="publish-readiness ready"><ShieldCheck size={19} /><div className="release-package-summary"><strong>发布包已就绪</strong><span>发行母带、单集封面、逐字稿、章节、来源与自动成片审计已锁定。</span><div className="release-package-facts"><span>{Number(transcript.lineCount) || 0} 句逐字稿</span><span>{chapters.length} 个章节</span><span>{sources.length} 个已核验来源</span><span>母带与封面校验值已登记</span></div></div><a className="secondary-command release-package-download" href={`/api/runs/${encodeURIComponent(runId)}/release-package`} download><Download size={15} />下载发行清单</a></div>
+    <div className="publish-readiness ready"><ShieldCheck size={19} /><div className="release-package-summary"><strong>发布包已就绪</strong><span>发行母带、单集封面、逐字稿、章节、来源与自动成片审计已锁定。</span><div className="release-package-facts"><span>{Number(transcript.lineCount) || 0} 句逐字稿</span><span>{chapters.length} 个章节</span><span>{sources.length} 个已核验来源</span><span>母带与封面校验值已登记</span></div></div><a className="secondary-command release-package-download" href={studioPath(`/api/runs/${encodeURIComponent(runId)}/release-package`)} download><Download size={15} />下载发行清单</a></div>
     <PublicationLedger records={records} onRegister={onRegister} onDirtyChange={onDirtyChange} />
   </div>;
   if (data.releaseReady === true) return <div className="publish-readiness blocked"><Waypoints size={19} /><div><strong>发布包已失效</strong><span>上游内容或自动成片审计已经更新，请重新运行发布检查后再下载。</span></div></div>;
@@ -882,7 +882,7 @@ function MusicPlanPreview({
           <label><span>声音选择</span><select aria-label={`${String(cue.label ?? cue.id)}：声音选择`} value={selectedValue} disabled={readOnly} onChange={(event) => updateCue(String(cue.id), event.target.value)}>
             {choices.map((choice) => <option key={`${String(cue.id)}-${String(choice.assetId ?? choice.action)}`} value={choice.action === "silence" ? "silence" : String(choice.assetId)}>{String(choice.title)}{choice.action === "asset" ? ` · ${Number(choice.score)}/100` : ""}</option>)}
           </select></label>
-          {selectedChoice && typeof selectedChoice.mediaUrl === "string" ? <div className="cue-audition"><audio aria-label={`试听：${String(cue.label ?? cue.id)} · ${String(selectedChoice.title ?? "音乐")}`} controls preload="none" src={selectedChoice.mediaUrl}>当前浏览器无法播放音频。</audio><small>{String(selectedChoice.reason ?? "")}</small></div> : <div className="cue-silence"><span />保留节目呼吸</div>}
+          {selectedChoice && typeof selectedChoice.mediaUrl === "string" ? <div className="cue-audition"><audio aria-label={`试听：${String(cue.label ?? cue.id)} · ${String(selectedChoice.title ?? "音乐")}`} controls preload="none" src={studioPath(selectedChoice.mediaUrl)}>当前浏览器无法播放音频。</audio><small>{String(selectedChoice.reason ?? "")}</small></div> : <div className="cue-silence"><span />保留节目呼吸</div>}
         </article>;
       })}
     </div>
@@ -1131,8 +1131,8 @@ function audioMediaPreview(value: unknown): { url: string; releaseReady: boolean
   const data = value as Record<string, unknown>;
   const mediaUrl = data.mediaUrl;
   if (typeof mediaUrl !== "string" || !mediaUrl.startsWith("/media/")) return undefined;
-  if (data.previewKind === "local_table_read" && data.releaseReady === false) return { url: mediaUrl, releaseReady: false };
-  if (data.releaseReady === true) return { url: mediaUrl, releaseReady: true };
+  if (data.previewKind === "local_table_read" && data.releaseReady === false) return { url: studioPath(mediaUrl), releaseReady: false };
+  if (data.releaseReady === true) return { url: studioPath(mediaUrl), releaseReady: true };
   return undefined;
 }
 
