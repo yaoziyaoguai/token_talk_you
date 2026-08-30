@@ -16,10 +16,10 @@ fi
 
 install -d -m 0750 "$backup_root"
 docker run --rm --user 0:0 \
-  --volume "$workspace_volume:/data:ro" \
+  --volume "$workspace_volume:/source:ro" \
   --volume "$backup_root:/backup" \
   token-talk:candidate \
-  tar -czf "/backup/$backup_name" -C /data .
+  tar -czf "/backup/$backup_name" -C /source .
 
 find "$backup_root" -maxdepth 1 -type f -name 'token-talk-*.tar.gz' -mtime +14 -delete
 echo "工作区备份已写入 $backup_root/$backup_name"

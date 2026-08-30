@@ -15,12 +15,14 @@ COPY apps/codex-broker/package.json apps/codex-broker/package.json
 COPY packages/agent-protocol/package.json packages/agent-protocol/package.json
 COPY packages/domain/package.json packages/domain/package.json
 COPY packages/workflow/package.json packages/workflow/package.json
-RUN --mount=type=cache,id=token-talk-pnpm-v2,target=/pnpm/store \
+RUN --mount=type=cache,id=token-talk-pnpm-v3,target=/pnpm/store \
     pnpm config set store-dir /pnpm/store \
-    && export npm_config_registry="$NPM_REGISTRY" \
-      npm_config_fetch_retries=5 \
-      npm_config_fetch_retry_mintimeout=2000 \
-      npm_config_fetch_retry_maxtimeout=120000 \
+    && export PNPM_CONFIG_REGISTRY="$NPM_REGISTRY" \
+      PNPM_CONFIG_FETCH_RETRIES=5 \
+      PNPM_CONFIG_FETCH_RETRY_MINTIMEOUT=2000 \
+      PNPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
+    && effective_registry="$(pnpm config get registry)" \
+    && test "${effective_registry%/}" = "${NPM_REGISTRY%/}" \
     && for attempt in 1 2 3; do \
       pnpm install --frozen-lockfile --network-concurrency=8 && exit 0; \
       sleep "$((attempt * 10))"; \

@@ -86,6 +86,21 @@ jobs:
           headers="$(mktemp)"
           curl --fail --silent --show-error --dump-header "$headers" --output /dev/null "http://127.0.0.1:4329$asset_path"
           grep --ignore-case --extended-regexp --quiet '^content-type: (text|application)/javascript' "$headers"
+      - name: Smoke test the workspace backup
+        run: |
+          set -Eeuo pipefail
+          volume=token-talk_ci_backup_source
+          backup_root="$(mktemp -d)"
+          trap 'docker volume rm "$volume" >/dev/null 2>&1 || true; rm -rf "$backup_root"' EXIT
+          docker volume create "$volume" >/dev/null
+          docker run --rm --user 0:0 --volume "$volume:/source" --entrypoint sh token-talk:ci \
+            -c 'printf backup-probe >/source/probe.txt'
+          docker tag token-talk:ci token-talk:candidate
+          TOKEN_TALK_WORKSPACE_VOLUME="$volume" TOKEN_TALK_BACKUP_ROOT="$backup_root" \
+            bash scripts/backup-production.sh
+          archive="$(find "$backup_root" -maxdepth 1 -type f -name 'token-talk-*.tar.gz' -print -quit)"
+          [[ -n "$archive" ]] || { echo '备份脚本未生成归档。' >&2; exit 1; }
+          tar -tzf "$archive" | grep --fixed-strings --line-regexp --quiet './probe.txt'
 
   security:
     name: Production dependency audit
