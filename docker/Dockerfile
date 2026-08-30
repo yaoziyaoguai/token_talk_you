@@ -3,9 +3,11 @@ ARG NODE_IMAGE=node:22-alpine
 FROM ${NODE_IMAGE} AS builder
 
 ARG APP_BASE_PATH=/
+ARG NPM_REGISTRY=https://registry.npmjs.org
 
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@11.19.0 --activate
+RUN COREPACK_NPM_REGISTRY="$NPM_REGISTRY" corepack enable \
+    && COREPACK_NPM_REGISTRY="$NPM_REGISTRY" corepack prepare pnpm@11.19.0 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/studio/package.json apps/studio/package.json
@@ -13,7 +15,17 @@ COPY apps/codex-broker/package.json apps/codex-broker/package.json
 COPY packages/agent-protocol/package.json packages/agent-protocol/package.json
 COPY packages/domain/package.json packages/domain/package.json
 COPY packages/workflow/package.json packages/workflow/package.json
-RUN pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=token-talk-pnpm-v2,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store \
+    && export npm_config_registry="$NPM_REGISTRY" \
+      npm_config_fetch_retries=5 \
+      npm_config_fetch_retry_mintimeout=2000 \
+      npm_config_fetch_retry_maxtimeout=120000 \
+    && for attempt in 1 2 3; do \
+      pnpm install --frozen-lockfile --network-concurrency=8 && exit 0; \
+      sleep "$((attempt * 10))"; \
+    done; \
+    exit 1
 
 COPY . .
 RUN TOKEN_TALK_BASE_PATH="$APP_BASE_PATH" pnpm build

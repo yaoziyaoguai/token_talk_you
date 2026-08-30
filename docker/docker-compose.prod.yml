@@ -8,6 +8,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         NODE_IMAGE: ${TOKEN_TALK_BUILD_NODE_IMAGE:-node:22-alpine}
+        NPM_REGISTRY: ${TOKEN_TALK_NPM_REGISTRY:-https://registry.npmmirror.com}
         ALPINE_MIRROR: ${ALPINE_MIRROR:-http://mirrors.cloud.aliyuncs.com/alpine}
         APP_BASE_PATH: ${TOKEN_TALK_BASE_PATH:-/}
     container_name: token_talk_prod

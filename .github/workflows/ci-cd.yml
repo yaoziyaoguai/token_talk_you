@@ -52,6 +52,7 @@ jobs:
         run: |
           docker build \
             --build-arg NODE_IMAGE=public.ecr.aws/docker/library/node:22-alpine \
+            --build-arg NPM_REGISTRY=https://registry.npmjs.org \
             --build-arg APP_BASE_PATH=/ \
             --file docker/Dockerfile \
             --tag token-talk:ci \

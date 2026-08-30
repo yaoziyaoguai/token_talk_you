@@ -29,7 +29,7 @@ chmod 600 .env.prod
 
 Set the exact public origin, research contact, a random NewsNow JWT secret, and only the paid provider keys that are actually used. `TOKEN_TALK_CODEX_SOCKET_GID` is derived from the host group by the deploy script.
 
-When upgrading an older deployment, replace the former `NODE_IMAGE` and `DEBIAN_MIRROR_ORIGIN` entries with `TOKEN_TALK_BUILD_NODE_IMAGE` and `ALPINE_MIRROR`. Also replace tag-based `NEWSNOW_IMAGE` and `DAILYHOT_IMAGE` values with the digest-pinned references from the current example file. Deployment stops before changing production if either supporting image is not pinned to a SHA-256 digest.
+When upgrading an older deployment, replace the former `NODE_IMAGE` and `DEBIAN_MIRROR_ORIGIN` entries with `TOKEN_TALK_BUILD_NODE_IMAGE`, `TOKEN_TALK_NPM_REGISTRY`, and `ALPINE_MIRROR`. Also replace tag-based `NEWSNOW_IMAGE` and `DAILYHOT_IMAGE` values with the digest-pinned references from the current example file. Deployment stops before changing production if either supporting image is not pinned to a SHA-256 digest. The production default uses `registry.npmmirror.com`; CI overrides it with the official npm registry, and the image build preserves downloaded packages across bounded install retries.
 
 While mainland ICP interception blocks the domain, bootstrap Nginx with a temporary self-signed certificate. This certificate is only used long enough to request a publicly trusted short-lived IP certificate; do not use the Studio through a browser warning:
 
