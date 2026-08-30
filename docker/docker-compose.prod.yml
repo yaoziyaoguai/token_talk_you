@@ -1,0 +1,91 @@
+name: token-talk
+
+services:
+  app:
+    image: token-talk:candidate
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    container_name: token_talk_prod
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4311
+      TOKEN_TALK_CONTAINER_BIND: 1
+      TOKEN_TALK_PUBLIC_ORIGIN: ${TOKEN_TALK_PUBLIC_ORIGIN:?TOKEN_TALK_PUBLIC_ORIGIN is required}
+      TOKEN_TALK_WORKSPACE: /data/token-talk
+      TOKEN_TALK_CODEX_SOCKET_PATH: /run/token-talk-codex/worker.sock
+      TOKEN_TALK_CODEX_MODEL: ${TOKEN_TALK_CODEX_MODEL:-}
+      TOKEN_TALK_RESEARCH_USER_AGENT: ${TOKEN_TALK_RESEARCH_USER_AGENT:?TOKEN_TALK_RESEARCH_USER_AGENT is required}
+      TOKEN_TALK_RESEARCH_CONTACT_EMAIL: ${TOKEN_TALK_RESEARCH_CONTACT_EMAIL:-}
+      TOKEN_TALK_NEWSNOW_URL: http://newsnow:4444
+      TOKEN_TALK_DAILYHOT_URL: http://dailyhot:6688
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${TOKEN_TALK_HOST_PORT:-4321}:4311"
+    volumes:
+      - token_talk_workspace:/data/token-talk
+      - type: bind
+        source: ${TOKEN_TALK_CODEX_RUNTIME_DIR:-/run/token-talk-codex}
+        target: /run/token-talk-codex
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${TOKEN_TALK_CODEX_SOCKET_GID:?TOKEN_TALK_CODEX_SOCKET_GID is required}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m,uid=1001,gid=1001
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    cpus: 2
+    stop_grace_period: 30s
+    networks:
+      - studio
+
+  newsnow:
+    image: ${NEWSNOW_IMAGE:-ghcr.io/ourongxing/newsnow:v0.0.39}
+    container_name: token_talk_newsnow
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4444
+      NODE_ENV: production
+      INIT_TABLE: "true"
+      ENABLE_CACHE: "true"
+      JWT_SECRET: ${NEWSNOW_JWT_SECRET:-}
+    volumes:
+      - newsnow_data:/usr/app/.data
+    networks:
+      - studio
+
+  dailyhot:
+    image: ${DAILYHOT_IMAGE:-imsyy/dailyhot-api:v2.0.8}
+    container_name: token_talk_dailyhot
+    restart: unless-stopped
+    environment:
+      PORT: 6688
+      ALLOWED_DOMAIN: "*"
+      ALLOWED_HOST: ""
+      USE_LOG_FILE: "false"
+      REQUEST_TIMEOUT: 6000
+      CACHE_TTL: 1800
+    networks:
+      - studio
+
+volumes:
+  token_talk_workspace:
+  newsnow_data:
+
+networks:
+  studio:
+    internal: false

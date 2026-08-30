@@ -1,0 +1,105 @@
+name: CI/CD
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: token-talk-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Test, build, and browser QA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: bash scripts/smoke-production-build.sh
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+      - run: bash -n scripts/backup-production.sh scripts/deploy-production.sh scripts/setup-codex-broker-host.sh scripts/smoke-production-build.sh
+      - run: docker compose --env-file .env.prod.example -f docker/docker-compose.prod.yml config --quiet
+      - run: docker build --file docker/Dockerfile --tag token-talk:ci .
+      - name: Smoke test the production image
+        run: |
+          set -Eeuo pipefail
+          docker run --detach --rm --name token-talk-ci \
+            --publish 127.0.0.1:4329:4311 \
+            --env TOKEN_TALK_PUBLIC_ORIGIN=https://podcast.example.com \
+            --env TOKEN_TALK_RESEARCH_USER_AGENT='TokenTalk-CI/0.1 (ci@example.com)' \
+            token-talk:ci
+          trap 'docker stop token-talk-ci >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:4329/api/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs token-talk-ci
+          exit 1
+
+  security:
+    name: Production dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
+
+  deploy:
+    name: Deploy to Alibaba Cloud ECS
+    runs-on: ubuntu-latest
+    needs: [verify, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - name: Deploy with health checks and rollback
+        uses: appleboy/ssh-action@2ead5e36573f08b82fbfce1504f1a4b05a647c6f
+        env:
+          PROJECT_PATH: ${{ secrets.PROJECT_PATH }}
+          PUBLIC_HEALTH_URL: ${{ secrets.PUBLIC_HEALTH_URL }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 45m
+          envs: PROJECT_PATH,PUBLIC_HEALTH_URL
+          script: |
+            set -Eeuo pipefail
+            release_path="${PROJECT_PATH}.release"
+            cd "$PROJECT_PATH"
+            git fetch origin +refs/heads/main:refs/remotes/origin/main
+            if [[ -e "$release_path/.git" ]]; then
+              git -C "$release_path" checkout --detach origin/main
+            elif [[ -e "$release_path" ]]; then
+              echo "Release path exists but is not a Git worktree: $release_path" >&2
+              exit 1
+            else
+              git worktree add --detach "$release_path" origin/main
+            fi
+            TOKEN_TALK_ENV_FILE="$PROJECT_PATH/.env.prod" \
+              PUBLIC_HEALTH_URL="$PUBLIC_HEALTH_URL" \
+              bash "$release_path/scripts/deploy-production.sh"

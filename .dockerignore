@@ -1,0 +1,13 @@
+.git
+.github
+.playwright-cli
+node_modules
+**/node_modules
+**/dist
+workspace
+output
+test-results
+playwright-report
+.env*
+!.env.prod.example
+*.log

@@ -1,0 +1,12 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@testing-library/react@16.3.3'
+  - '@vitejs/plugin-react@6.1.1'
+  - lucide-react@1.35.0

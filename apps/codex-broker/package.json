@@ -1,0 +1,18 @@
+{
+  "name": "@token-talk/codex-broker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/main.js",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@token-talk/agent-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0"
+  }
+}

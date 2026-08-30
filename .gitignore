@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+workspace/
+playwright-report/
+test-results/
+.playwright-cli/
+output/playwright/
+.DS_Store
+.gstack/
+.pnpm-store/
+.studio-server.lock
+.studio-staging/
