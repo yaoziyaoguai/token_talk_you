@@ -240,7 +240,8 @@ export async function createStudioServer(
     return service.registerPublication(request.params.runId, input);
   });
 
-  app.post<{ Querystring: { refresh?: string } }>("/api/candidates", async (request) => {
+  app.post<{ Querystring: { refresh?: string; cached?: string } }>("/api/candidates", async (request) => {
+    if (request.query.cached === "true") return service.listCachedCandidates();
     return service.listCandidates(request.query.refresh === "true");
   });
 

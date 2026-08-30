@@ -106,6 +106,27 @@ export class CandidateStudio {
     };
   }
 
+  readCached(snapshot: StudioSnapshot): CandidateInbox {
+    if (this.cache) {
+      return {
+        ...this.cache.value,
+        items: [...this.cache.value.items, ...seriesCandidates(snapshot, this.now())],
+      };
+    }
+    const readAt = this.now().toISOString();
+    return {
+      items: seriesCandidates(snapshot, this.now()),
+      fetchedAt: readAt,
+      sources: [],
+      warnings: ["热点仍在后台采集，先展示可用的系列选题。"],
+      freshness: {
+        status: "fallback",
+        lastSuccessfulAt: snapshot.updatedAt,
+        attemptedAt: readAt,
+      },
+    };
+  }
+
   private async refreshTrend(): Promise<CandidateInbox> {
     let feed: TrendFeed;
     try {
@@ -118,7 +139,8 @@ export class CandidateStudio {
         warnings: [...this.cache.value.warnings, `本次刷新失败，继续使用最后一次成功候选：${errorMessage(error)}`],
       };
     }
-    if (feed.signals.length === 0 && this.cache) {
+    const hasReadySource = feed.sources.some((source) => source.status === "ready");
+    if (feed.signals.length === 0 && this.cache && !hasReadySource) {
       return {
         ...this.cache.value,
         sources: feed.sources,
@@ -160,9 +182,7 @@ export class CandidateStudio {
       warnings,
       freshness: { status: "current", lastSuccessfulAt: feed.fetchedAt },
     };
-    if (candidates.length > 0) {
-      this.cache = { expiresAt: this.now().getTime() + 15 * 60_000, value };
-    }
+    this.cache = { expiresAt: this.now().getTime() + 15 * 60_000, value };
     return value;
   }
 

@@ -21,6 +21,27 @@ describe("CandidateStudio", () => {
     expect(listSignals).toHaveBeenCalledOnce();
   });
 
+  it("caches a completed empty trend snapshot instead of returning to fallback", async () => {
+    const snapshot = createSeedSnapshot(NOW);
+    const listSignals = vi.fn(async () => ({
+      signals: [],
+      fetchedAt: NOW,
+      warnings: [],
+      sources: [{ id: "quiet-source", label: "Quiet source", count: 0, status: "ready" as const }],
+    }));
+    const studio = new CandidateStudio({ gateway: { listSignals }, model: null, now: () => new Date(NOW) });
+
+    const collected = await studio.list(snapshot, true);
+    const refreshed = await studio.list(snapshot, true);
+    const cached = studio.readCached(snapshot);
+
+    expect(collected.items.some((item) => item.origin === "trend")).toBe(false);
+    expect(refreshed.freshness.status).toBe("current");
+    expect(cached.freshness.status).toBe("current");
+    expect(cached.sources).toEqual([{ id: "quiet-source", label: "Quiet source", count: 0, status: "ready" }]);
+    expect(listSignals).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps each series proposal identity stable when another proposal is adopted", async () => {
     const snapshot = createSeedSnapshot(NOW);
     const studio = new CandidateStudio({ gateway: gateway([]), model: null, now: () => new Date(NOW) });

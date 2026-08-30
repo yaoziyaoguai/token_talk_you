@@ -231,16 +231,18 @@ export class StudioService {
     });
   }
 
-  async listCandidates(force = false): Promise<CandidateInbox & { collector: TrendCollectorStatus }> {
-    const value = await this.candidates.listResponsive(await this.repository.load(), force);
-    // 免费数据源和本地模型可以慢，但不能阻塞工作台；后续轮询会接住后台完成的新快照。
+  async listCandidates(force = false, responseBudgetMs = 8_000): Promise<CandidateInbox & { collector: TrendCollectorStatus }> {
     const collector = this.trendCollector.status();
-    if (
-      value.freshness.status === "fallback"
-      || !collector.lastAttemptAt
-      || collector.state === "collecting"
-      || collector.lastSuccessfulAt !== value.fetchedAt
-    ) this.trendCollector.observe(value);
+    if (!force && collector.lastAttemptAt) return this.listCachedCandidates();
+
+    void this.trendCollector.collectNow();
+    // 首次打开最多等待一个响应预算；超时后只读轮询会接住同一个服务端采集任务。
+    await this.trendCollector.waitForCurrentCollection(responseBudgetMs);
+    return this.listCachedCandidates();
+  }
+
+  async listCachedCandidates(): Promise<CandidateInbox & { collector: TrendCollectorStatus }> {
+    const value = this.candidates.readCached(await this.repository.load());
     return { ...value, collector: this.trendCollector.status() };
   }
 

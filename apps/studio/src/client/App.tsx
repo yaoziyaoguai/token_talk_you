@@ -30,6 +30,8 @@ const navItems = [
 ] as const;
 
 const CANDIDATE_SYNC_INTERVAL_MS = 60_000;
+const CANDIDATE_WARMUP_SYNC_INTERVAL_MS = 1_000;
+const CANDIDATE_WARMUP_SYNC_LIMIT = 20;
 
 export function App({ initialData, initialInbox }: AppProps) {
   const [view, setView] = useState<ViewId>(() => readLocationState().view);
@@ -53,6 +55,10 @@ export function App({ initialData, initialInbox }: AppProps) {
   const [startError, setStartError] = useState<string>();
   const [productionDirty, setProductionDirty] = useState(false);
   const candidateRequestInFlight = useRef(false);
+  const candidateActiveRefresh = useRef(false);
+  const candidateRefreshQueued = useRef(false);
+  const candidateCacheSyncQueued = useRef(false);
+  const candidateWarmupAttempts = useRef(0);
 
   useEffect(() => {
     StudioApi.configureLocalSession(data?.mutationToken);
@@ -91,18 +97,44 @@ export function App({ initialData, initialInbox }: AppProps) {
     return () => window.removeEventListener("popstate", restoreLocation);
   }, [focusedSeriesId, productionDirty, selectedNodeId, selectedRunId, view]);
 
-  const loadCandidates = useCallback(async (refresh: boolean, silent = false) => {
-    if (candidateRequestInFlight.current) return;
+  const loadCandidates = useCallback(async (refresh: boolean, silent = false, cached = false, queueIfBusy = false) => {
+    if (candidateRequestInFlight.current) {
+      if (refresh && !candidateActiveRefresh.current) {
+        candidateRefreshQueued.current = true;
+        setCandidateLoading(true);
+      } else if (queueIfBusy && !candidateRefreshQueued.current) {
+        candidateCacheSyncQueued.current = true;
+        setCandidateLoading(true);
+      }
+      return;
+    }
     candidateRequestInFlight.current = true;
-    if (!silent) setCandidateLoading(true);
-    setCandidateLoadError(undefined);
+    let request = { refresh, silent, cached };
     try {
-      setInbox(await StudioApi.loadCandidates(refresh));
-    } catch (reason) {
-      setCandidateLoadError(reason instanceof Error ? reason.message : "无法载入今日选题");
+      while (request) {
+        candidateActiveRefresh.current = request.refresh;
+        if (!request.silent) setCandidateLoading(true);
+        setCandidateLoadError(undefined);
+        try {
+          setInbox(await StudioApi.loadCandidates(request.refresh, request.cached));
+        } catch (reason) {
+          setCandidateLoadError(reason instanceof Error ? reason.message : "无法载入今日选题");
+        }
+        if (candidateRefreshQueued.current) {
+          candidateRefreshQueued.current = false;
+          candidateCacheSyncQueued.current = false;
+          request = { refresh: true, silent: false, cached: false };
+        } else if (candidateCacheSyncQueued.current) {
+          candidateCacheSyncQueued.current = false;
+          request = { refresh: false, silent: false, cached: true };
+        } else {
+          break;
+        }
+      }
     } finally {
+      candidateActiveRefresh.current = false;
       candidateRequestInFlight.current = false;
-      if (!silent) setCandidateLoading(false);
+      setCandidateLoading(false);
     }
   }, []);
 
@@ -114,7 +146,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   useEffect(() => {
     const syncCachedCandidates = () => {
       if (!data?.mutationToken) return;
-      void loadCandidates(false, true);
+      void loadCandidates(false, true, true);
     };
     const syncWhenVisible = () => {
       if (document.visibilityState === "visible") syncCachedCandidates();
@@ -128,6 +160,30 @@ export function App({ initialData, initialInbox }: AppProps) {
       document.removeEventListener("visibilitychange", syncWhenVisible);
     };
   }, [data?.mutationToken, loadCandidates]);
+
+  const trendCandidateCount = inbox?.items.filter((candidate) => candidate.origin === "trend").length ?? 0;
+  useEffect(() => {
+    const waitingForFirstTrendSnapshot = Boolean(
+      data?.mutationToken
+      && inbox
+      && trendCandidateCount === 0
+      && inbox.freshness?.status === "fallback",
+    );
+    if (!waitingForFirstTrendSnapshot) {
+      candidateWarmupAttempts.current = 0;
+      return;
+    }
+    const timer = window.setInterval(() => {
+      if (candidateRequestInFlight.current) return;
+      if (candidateWarmupAttempts.current >= CANDIDATE_WARMUP_SYNC_LIMIT) {
+        window.clearInterval(timer);
+        return;
+      }
+      candidateWarmupAttempts.current += 1;
+      void loadCandidates(false, true, true);
+    }, CANDIDATE_WARMUP_SYNC_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [data?.mutationToken, inbox, loadCandidates, trendCandidateCount]);
 
   if (bootError) return <div className="boot-state error" role="alert"><strong>Studio 没有成功打开</strong><span>{bootError}</span><button className="secondary-command" type="button" onClick={() => setBootAttempt((value) => value + 1)}>重新连接</button></div>;
   if (!data) return <div className="boot-state">正在打开 Token Talk Studio…</div>;
@@ -235,12 +291,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   async function createSeries(input: Parameters<typeof StudioApi.createSeries>[0]) {
     const series = await StudioApi.createSeries(input);
     setData((current) => current ? { ...current, series: [...current.series, series] } : current);
-    try {
-      setInbox(await StudioApi.loadCandidates(false));
-      setCandidateLoadError(undefined);
-    } catch (reason) {
-      setCandidateLoadError(reason instanceof Error ? reason.message : "新系列已创建，但下一期提案暂未刷新");
-    }
+    await loadCandidates(false, true, true, true);
   }
 
   async function reviewResearchSource(artifactId: string, sourceId: string, verified: boolean) {

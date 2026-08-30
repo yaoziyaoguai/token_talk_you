@@ -71,8 +71,120 @@ describe("Token Talk operator shell", () => {
       });
 
       expect(fetcher).toHaveBeenCalledTimes(1);
-      expect(fetcher).toHaveBeenCalledWith("/api/candidates", expect.objectContaining({ method: "POST" }));
+      expect(fetcher).toHaveBeenCalledWith("/api/candidates?cached=true", expect.objectContaining({ method: "POST" }));
       expect(fetcher.mock.calls.some(([input]) => String(input).includes("refresh=true"))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("queues an explicit refresh behind an in-flight cache sync", async () => {
+    vi.useFakeTimers();
+    let resolveCached: ((response: Response) => void) | undefined;
+    const fetcher = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        resolveCached = resolve;
+      }))
+      .mockImplementationOnce(async () => new Response(JSON.stringify(EMPTY_INBOX), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetcher);
+
+    try {
+      render(<App
+        initialData={{ ...createSeedSnapshot(NOW), mutationToken: "app-candidate-refresh-queue-token-01" }}
+        initialInbox={EMPTY_INBOX}
+      />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole("button", { name: "刷新热点信号" }));
+      expect(fetcher).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveCached?.(new Response(JSON.stringify(EMPTY_INBOX), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }));
+        await Promise.resolve();
+      });
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenLastCalledWith("/api/candidates?refresh=true", expect.objectContaining({ method: "POST" }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls a cold fallback briefly until the first trend snapshot is ready", async () => {
+    vi.useFakeTimers();
+    const fallbackInbox = {
+      ...EMPTY_INBOX,
+      freshness: { status: "fallback" as const, lastSuccessfulAt: NOW, attemptedAt: NOW },
+      collector: { state: "degraded" as const, cadenceSeconds: 300, consecutiveFailures: 1 },
+    };
+    const readyInbox = {
+      ...EMPTY_INBOX,
+      freshness: { status: "current" as const, lastSuccessfulAt: NOW },
+      collector: { state: "ready" as const, cadenceSeconds: 300, consecutiveFailures: 0 },
+    };
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(readyInbox), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetcher);
+
+    try {
+      render(<App
+        initialData={{ ...createSeedSnapshot(NOW), mutationToken: "app-candidate-warmup-token-0000001" }}
+        initialInbox={fallbackInbox}
+      />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher).toHaveBeenCalledWith("/api/candidates?cached=true", expect.objectContaining({ method: "POST" }));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds cold fallback cache polling when no trend snapshot becomes ready", async () => {
+    vi.useFakeTimers();
+    const fallbackInbox = {
+      ...EMPTY_INBOX,
+      freshness: { status: "fallback" as const, lastSuccessfulAt: NOW, attemptedAt: NOW },
+      collector: { state: "degraded" as const, cadenceSeconds: 300, consecutiveFailures: 1 },
+    };
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(fallbackInbox), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetcher);
+
+    try {
+      render(<App
+        initialData={{ ...createSeedSnapshot(NOW), mutationToken: "app-candidate-warmup-limit-token-01" }}
+        initialInbox={fallbackInbox}
+      />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_000);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(20);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_000);
+      });
+      expect(fetcher).toHaveBeenCalledTimes(20);
     } finally {
       vi.useRealTimers();
     }
@@ -241,6 +353,7 @@ describe("Token Talk operator shell", () => {
 
   it("refreshes series proposals immediately after a series is created", async () => {
     const user = userEvent.setup();
+    let resolveCached: ((response: Response) => void) | undefined;
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input) === "/api/series") {
         return new Response(JSON.stringify({
@@ -254,6 +367,11 @@ describe("Token Talk operator shell", () => {
           memory: [],
         }), { status: 201, headers: { "content-type": "application/json" } });
       }
+      if (String(input) === "/api/candidates?cached=true") {
+        return new Promise<Response>((resolve) => {
+          resolveCached = resolve;
+        });
+      }
       return new Response(JSON.stringify(EMPTY_INBOX), { status: 200, headers: { "content-type": "application/json" } });
     });
     vi.stubGlobal("fetch", fetcher);
@@ -266,7 +384,19 @@ describe("Token Talk operator shell", () => {
     await user.type(screen.getByLabelText("核心听众"), "技术与社会听众");
     await user.click(screen.getByRole("button", { name: "创建系列" }));
 
-    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/api/candidates", expect.objectContaining({ method: "POST" })));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/api/candidates?cached=true", expect.objectContaining({ method: "POST" })));
+    await user.click(screen.getByRole("button", { name: "选题" }));
+    await user.click(screen.getByRole("button", { name: "刷新热点信号" }));
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("refresh=true"))).toBe(false);
+    await act(async () => {
+      resolveCached?.(new Response(JSON.stringify(EMPTY_INBOX), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith("/api/candidates?refresh=true", expect.objectContaining({ method: "POST" })));
+    await user.click(screen.getByRole("button", { name: "节目" }));
     expect(screen.getByRole("heading", { name: "AI 口述史" })).toBeInTheDocument();
   });
 

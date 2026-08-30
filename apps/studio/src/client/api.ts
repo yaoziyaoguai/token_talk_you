@@ -117,8 +117,9 @@ export const StudioApi = {
     return bootstrap;
   },
 
-  async loadCandidates(refresh = false): Promise<CandidateInbox> {
-    const { response, body } = await request(`/api/candidates${refresh ? "?refresh=true" : ""}`, { method: "POST" });
+  async loadCandidates(refresh = false, cached = false): Promise<CandidateInbox> {
+    const query = refresh ? "?refresh=true" : cached ? "?cached=true" : "";
+    const { response, body } = await request(`/api/candidates${query}`, { method: "POST" });
     if (!response.ok) throw new Error("无法载入今日选题");
     return CandidateInboxSchema.parse(body);
   },

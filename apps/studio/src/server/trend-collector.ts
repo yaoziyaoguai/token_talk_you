@@ -54,8 +54,17 @@ export class TrendCollector {
     return { ...this.current };
   }
 
-  async settleCurrentCollection(): Promise<void> {
-    await this.inFlight;
+  async waitForCurrentCollection(responseBudgetMs: number): Promise<void> {
+    const active = this.inFlight;
+    if (!active) return;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timeoutId = setTimeout(resolve, positiveMilliseconds(responseBudgetMs, "trend response budget"));
+      timeoutId.unref?.();
+    });
+    await Promise.race([active, timeout]).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+    });
   }
 
   observe(inbox: CandidateInbox): void {
