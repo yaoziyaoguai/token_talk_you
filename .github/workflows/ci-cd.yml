@@ -26,6 +26,7 @@ jobs:
         with:
           node-version: "22"
           cache: pnpm
+      - run: sudo apt-get update && sudo apt-get install --yes espeak-ng ffmpeg
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test

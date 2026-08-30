@@ -13,6 +13,7 @@ import { ReleasePackageSchema } from "../src/shared/api.js";
 const NOW = "2026-08-29T00:00:00.000Z";
 let root: string;
 const execFile = promisify(execFileCallback);
+const FFMPEG_PATH = process.env.FFMPEG_PATH ?? "ffmpeg";
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "token-talk-local-production-"));
@@ -385,7 +386,7 @@ describe("LocalProductionExecutor external voice routing", () => {
     expect(outcome.status).toBe("succeeded");
     expect(outcome.outputs?.["artifact-voices"]).toMatchObject({
       confirmed: true,
-      selections: expect.arrayContaining([expect.objectContaining({ providerId: "local-macos-say" })]),
+      selections: expect.arrayContaining([expect.objectContaining({ providerId: "local-macos-say", voiceId: "preview-steady" })]),
     });
   });
 
@@ -480,7 +481,7 @@ describe("LocalProductionExecutor external voice routing", () => {
     run = reviseArtifact(run, "artifact-voices", {
       status: "confirmed",
       confirmed: true,
-      selections: [{ role: "引导者", providerId: "local-macos-say", voiceId: "Tingting", use: "preview_only" }],
+      selections: [{ role: "引导者", providerId: "local-macos-say", voiceId: "preview-steady", use: "preview_only" }],
     }, NOW);
     run = reviseArtifact(run, "artifact-cues", {
       status: "confirmed",
@@ -507,8 +508,8 @@ describe("LocalProductionExecutor external voice routing", () => {
   it("mixes a confirmed licensed cue into the rendered voice track and records the asset id", async () => {
     const dryPath = join(root, "dry.mp3");
     const musicPath = join(root, "music.wav");
-    await execFile("/opt/homebrew/bin/ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=4", "-c:a", "libmp3lame", dryPath]);
-    await execFile("/opt/homebrew/bin/ffmpeg", ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "pcm_s16le", musicPath]);
+    await execFile(FFMPEG_PATH, ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=4", "-c:a", "libmp3lame", dryPath]);
+    await execFile(FFMPEG_PATH, ["-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:a", "pcm_s16le", musicPath]);
     const library = new MusicLibraryStore(root, () => NOW);
     const asset = await library.add(await readFile(musicPath), {
       title: "结尾音色",

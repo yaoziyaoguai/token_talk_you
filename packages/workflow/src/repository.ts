@@ -79,6 +79,12 @@ export class StudioRepositoryConflictError extends Error {}
 function migrateLegacyLongFormSnapshot(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const snapshot = structuredClone(value) as Record<string, unknown>;
+  for (const providerValue of Array.isArray(snapshot.providers) ? snapshot.providers : []) {
+    const provider = asRecord(providerValue);
+    if (provider.id !== "local-macos-say") continue;
+    provider.label = "系统桌读预听";
+    provider.description = "用于零调用成本的工作流验证，不作为正式节目默认声音。macOS 使用系统语音，Linux 使用 eSpeak NG。";
+  }
   for (const recipeValue of Array.isArray(snapshot.recipes) ? snapshot.recipes : []) {
     const recipe = asRecord(recipeValue);
     const range = asRecord(recipe.targetMinutes);

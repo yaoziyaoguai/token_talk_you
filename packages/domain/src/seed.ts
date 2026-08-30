@@ -68,8 +68,8 @@ function providers(): ProviderProfile[] {
     {
       id: "local-macos-say",
       capability: "voice.synthesize",
-      label: "macOS 系统配音",
-      description: "用于零调用成本的工作流验证，不作为正式节目默认声音。",
+      label: "系统桌读预听",
+      description: "用于零调用成本的工作流验证，不作为正式节目默认声音。macOS 使用系统语音，Linux 使用 eSpeak NG。",
       deployment: "local",
       billing: { type: "local_compute", unit: "compute_second", rate: 0, unitSize: 1, currency: "CNY" },
       rights: { commercialUse: "allowed", attributionRequired: false, voiceConsentRequired: false },
@@ -298,8 +298,8 @@ export function createSeedSnapshot(now = new Date().toISOString()): StudioSnapsh
       status: "confirmed",
       confirmed: true,
       selections: [
-        { role: "引导者", providerId: "local-macos-say", voiceId: "Tingting", use: "preview_only" },
-        { role: "质疑者", providerId: "local-macos-say", voiceId: "Eddy (中文（中国大陆）)", use: "preview_only" },
+        { role: "引导者", providerId: "local-macos-say", voiceId: "preview-steady", use: "preview_only" },
+        { role: "质疑者", providerId: "local-macos-say", voiceId: "preview-warm", use: "preview_only" },
       ],
     }, now),
     artifact("artifact-cues", "music-cue-sheet", { cues: 4, silenceOptions: 2 }, now),

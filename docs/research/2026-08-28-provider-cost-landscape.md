@@ -19,7 +19,7 @@ The first implementation should support local deterministic substitutes for ever
 
 | Provider | Current economics | Useful characteristics | Important constraints | Initial role |
 |---|---|---|---|---|
-| macOS `say` | Local, no API charge | Always-available chain verification on macOS | Not publication quality; limited performance control | Test fallback |
+| macOS `say` / Linux eSpeak NG | Local, no API charge | Cross-platform chain verification and table reads | Not publication quality; limited performance control | Test fallback |
 | Alibaba Qwen/CosyVoice API | Qwen3 TTS international prices are around CNY 0.95–1.00 per 10,000 input characters; China-region voice enrollment and voice design include limited introductory quotas | Chinese voice design, voice cloning, realtime and long-text options | Product, region, and model use different billing units; clone artifacts remain provider-bound | Economy/balanced bake-off |
 | Volcengine Doubao Speech | Listed TTS price CNY 5 per 10,000 characters and voice clone synthesis CNY 8 per 10,000 characters; current free quotas list 5,000 TTS characters and 10 cloned voices | Chinese expressivity, emotion, voice replication, podcast-oriented products | Free quota is small; billing and voice-clone consent must be tracked separately | Balanced Chinese bake-off |
 | Tencent Cloud TTS | One-time 8 million-character general-TTS trial package, valid three months; long-text API is excluded from that free package | Large evaluation quota and Chinese infrastructure | Trial is one-time, expires, and does not cover long-text synthesis | Economy evaluation |

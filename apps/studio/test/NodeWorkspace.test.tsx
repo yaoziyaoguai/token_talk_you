@@ -248,9 +248,19 @@ describe("NodeWorkspace execution", () => {
       confirmed: false,
       characters: 8_800,
       roles: ["问题引导者"],
-      selections: [{ role: "问题引导者", providerId: "local-macos-say", voiceId: "Tingting", use: "preview_only" }],
+      selections: [{ role: "问题引导者", providerId: "local-macos-say", voiceId: "preview-steady", use: "preview_only" }],
       candidates: [
-        { providerId: "local-macos-say", label: "macOS 系统配音", estimatedCostCny: 0, configured: true, releaseUse: "preview_only" },
+        {
+          providerId: "local-macos-say",
+          label: "系统桌读预听",
+          estimatedCostCny: 0,
+          configured: true,
+          releaseUse: "preview_only",
+          voices: [
+            { id: "preview-steady", label: "普通话 · 平稳" },
+            { id: "preview-bright", label: "普通话 · 明快" },
+          ],
+        },
         { providerId: "alibaba-qwen-tts", label: "Qwen3-TTS Flash", estimatedCostCny: 0.7, configured: false, releaseUse: "terms_review", freeQuota: "开通后 90 天 11 万字符" },
       ],
     }, NOW);
@@ -263,7 +273,7 @@ describe("NodeWorkspace execution", () => {
 
     expect(screen.getByText("约 ¥0.70")).toBeInTheDocument();
     expect(screen.getByText("开通后 90 天 11 万字符")).toBeInTheDocument();
-    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "问题引导者：声音" }), "Eddy (中文（中国大陆）)");
+    await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "问题引导者：声音" }), "preview-bright");
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     await userEvent.setup().click(screen.getByRole("button", { name: "保存声音配置" }));
 

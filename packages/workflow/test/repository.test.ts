@@ -75,6 +75,9 @@ describe("JsonStudioRepository", () => {
     roots.push(root);
     const legacy = createSeedSnapshot(NOW) as unknown as Record<string, any>;
     legacy.recipes[0].targetMinutes = { min: 8, max: 12 };
+    const legacyPreviewProvider = legacy.providers.find((provider: { id: string }) => provider.id === "local-macos-say");
+    legacyPreviewProvider.label = "macOS 系统配音";
+    legacyPreviewProvider.description = "仅可在 Mac 上使用。";
     legacy.runs[0].productionIntent = {
       hook: "旧版十分钟试跑",
       targetMinutes: 10,
@@ -111,6 +114,10 @@ describe("JsonStudioRepository", () => {
     expect(migrated.recipes[0]).toMatchObject({
       targetMinutes: { min: 15, max: 25 },
       legacyTargetMinutes: { min: 8, max: 12 },
+    });
+    expect(migrated.providers.find((provider) => provider.id === "local-macos-say")).toMatchObject({
+      label: "系统桌读预听",
+      description: expect.stringContaining("Linux 使用 eSpeak NG"),
     });
     expect(migrated.runs[0]).toMatchObject({
       status: "needs_human",

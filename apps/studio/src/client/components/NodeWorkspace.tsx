@@ -1,4 +1,5 @@
 import type { ExecuteNodeInput, NodeExecutionPreview, RegisterCoverMetadata, RegisterPublicationInput, RegisterReleaseMasterMetadata, ReleaseRightsBasis, StudioBootstrap, VoiceCatalog, WorkflowRun } from "../../shared/api.js";
+import { PREVIEW_VOICES } from "../../shared/preview-voices.js";
 import type { Artifact, ArtifactVersion, WorkflowNode } from "@token-talk/domain/model";
 import { BadgeCheck, ChevronDown, Download, ExternalLink, FileAudio, FileClock, ImagePlus, LoaderCircle, LockKeyhole, Music2, Play, RotateCw, Save, SearchCheck, ShieldCheck, SlidersHorizontal, Upload, WalletCards, Waypoints } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
@@ -911,7 +912,14 @@ function VoicePlanPreview({
   const candidates = asArray(plan.candidates).map(asRecord).filter((candidate) => typeof candidate.providerId === "string");
   const roles = asArray(plan.roles).filter((role): role is string => typeof role === "string");
   const selections = asArray(plan.selections).map((selection) => ({ ...asRecord(selection) }));
-  const previewVoices = ["Tingting", "Eddy (中文（中国大陆）)", "Flo (中文（中国大陆）)", "Reed (中文（中国大陆）)"];
+  const previewCandidate = candidates.find((candidate) => candidate.providerId === "local-macos-say");
+  const previewVoices = asArray(previewCandidate?.voices).map(asRecord).flatMap((voice) =>
+    typeof voice.id === "string" ? [{ id: voice.id, label: typeof voice.label === "string" ? voice.label : voice.id }] : [],
+  );
+  const availablePreviewVoices = previewVoices.length > 0
+    ? previewVoices
+    : PREVIEW_VOICES;
+  const availablePreviewVoiceIds = new Set(availablePreviewVoices.map((voice) => voice.id));
   const [voiceCatalog, setVoiceCatalog] = useState<VoiceCatalog>();
   const [voiceCatalogLoading, setVoiceCatalogLoading] = useState(false);
   const [voiceCatalogError, setVoiceCatalogError] = useState<string>();
@@ -938,7 +946,7 @@ function VoicePlanPreview({
       if (candidateRole !== role) return current;
       const next = { ...current, [field]: nextValue };
       if (field === "providerId" && nextValue === "local-macos-say" && !next.voiceId) {
-        next.voiceId = previewVoices[index % previewVoices.length];
+        next.voiceId = availablePreviewVoices[index % availablePreviewVoices.length]?.id;
       }
       if (field === "providerId" && nextValue !== "local-macos-say") next.voiceId = "";
       if (field === "providerId" && nextValue === "elevenlabs-v3" && voiceCatalog?.voices[0]) next.voiceId = voiceCatalog.voices[0].voiceId;
@@ -951,7 +959,7 @@ function VoicePlanPreview({
   const sameProvider = new Set(selections.filter((selection) => roles.includes(String(selection.role))).map((selection) => selection.providerId)).size === 1;
   const ready = roles.length > 0 && roles.every((role) => {
     const selection = selections.find((candidate) => candidate.role === role);
-    if (selection?.providerId === "local-macos-say") return typeof selection.voiceId === "string" && selection.voiceId.trim().length > 0;
+    if (selection?.providerId === "local-macos-say") return typeof selection.voiceId === "string" && availablePreviewVoiceIds.has(selection.voiceId);
     return selection?.providerId === "elevenlabs-v3" && typeof selection.voiceId === "string" && /^[A-Za-z0-9_-]{8,128}$/.test(selection.voiceId);
   }) && sameProvider;
 
@@ -967,7 +975,7 @@ function VoicePlanPreview({
             <option value="" disabled>选择服务</option>
             {candidates.map((candidate) => <option key={String(candidate.providerId)} value={String(candidate.providerId)} disabled={candidate.executable !== true}>{String(candidate.label ?? candidate.providerId)}{candidate.executable === true ? "" : " · 尚未接通"}</option>)}
           </select></label>
-          {selection.providerId === "local-macos-say" ? <label><span>{role} · 声音</span><select aria-label={`${role}：声音`} value={String(selection.voiceId ?? "")} disabled={readOnly} onChange={(event) => updateSelection(role, "voiceId", event.target.value)}>{previewVoices.map((voice) => <option key={voice} value={voice}>{voice}</option>)}</select></label> : selection.providerId === "elevenlabs-v3" ? <div className="account-voice-picker"><label><span>{role} · 账户音色</span><select aria-label={`${role}：账户音色`} value={String(selection.voiceId ?? "")} disabled={readOnly || voiceCatalogLoading || !voiceCatalog?.voices.length} onChange={(event) => updateSelection(role, "voiceId", event.target.value)}><option value="" disabled>{voiceCatalogLoading ? "正在读取音色" : "选择账户音色"}</option>{voiceCatalog?.voices.map((voice) => <option key={voice.voiceId} value={voice.voiceId}>{voice.name}{voice.labels.accent ? ` · ${voice.labels.accent}` : ""}</option>)}</select></label>{selectedVoice?.previewUrl ? <audio controls preload="none" src={selectedVoice.previewUrl} aria-label={`试听 ${role}：${selectedVoice.name}`}>当前浏览器无法播放音频。</audio> : null}{voiceCatalog?.warning || voiceCatalogError ? <small role="alert">{voiceCatalog?.warning ?? voiceCatalogError}</small> : null}</div> : null}
+          {selection.providerId === "local-macos-say" ? <label><span>{role} · 声音</span><select aria-label={`${role}：声音`} value={String(selection.voiceId ?? "")} disabled={readOnly} onChange={(event) => updateSelection(role, "voiceId", event.target.value)}>{availablePreviewVoices.map((voice) => <option key={voice.id} value={voice.id}>{voice.label}</option>)}</select></label> : selection.providerId === "elevenlabs-v3" ? <div className="account-voice-picker"><label><span>{role} · 账户音色</span><select aria-label={`${role}：账户音色`} value={String(selection.voiceId ?? "")} disabled={readOnly || voiceCatalogLoading || !voiceCatalog?.voices.length} onChange={(event) => updateSelection(role, "voiceId", event.target.value)}><option value="" disabled>{voiceCatalogLoading ? "正在读取音色" : "选择账户音色"}</option>{voiceCatalog?.voices.map((voice) => <option key={voice.voiceId} value={voice.voiceId}>{voice.name}{voice.labels.accent ? ` · ${voice.labels.accent}` : ""}</option>)}</select></label>{selectedVoice?.previewUrl ? <audio controls preload="none" src={selectedVoice.previewUrl} aria-label={`试听 ${role}：${selectedVoice.name}`}>当前浏览器无法播放音频。</audio> : null}{voiceCatalog?.warning || voiceCatalogError ? <small role="alert">{voiceCatalog?.warning ?? voiceCatalogError}</small> : null}</div> : null}
         </div>;
       })}
     </div>

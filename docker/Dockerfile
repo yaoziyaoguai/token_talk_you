@@ -21,19 +21,24 @@ RUN pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 
+ARG DEBIAN_MIRROR_ORIGIN=http://mirrors.aliyun.com
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4311 \
     TOKEN_TALK_CONTAINER_BIND=1 \
     TOKEN_TALK_WORKSPACE=/data/token-talk
 
-RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates ffmpeg tini util-linux \
+RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR_ORIGIN}|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::ForceIPv4=true update \
+    && apt-get -o Acquire::ForceIPv4=true install --yes --no-install-recommends ca-certificates espeak-ng ffmpeg tini util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 1001 token-talk \
     && useradd --system --uid 1001 --gid token-talk --home-dir /app token-talk \
     && mkdir -p /data/token-talk \
     && chown -R token-talk:token-talk /data/token-talk
+
+ENV HOME=/tmp
 
 WORKDIR /app
 COPY --from=builder /app/apps/studio/dist apps/studio/dist

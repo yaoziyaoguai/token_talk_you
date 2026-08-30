@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { Artifact, WorkflowRun } from "@token-talk/domain";
 import type { NodeExecutionOutcome } from "@token-talk/workflow";
 import { ReleasePackageSchema } from "../shared/api.js";
+import { PREVIEW_VOICE_IDS, PREVIEW_VOICES } from "../shared/preview-voices.js";
 import {
   ElevenLabsRenderError,
   ElevenLabsVoiceRenderer,
@@ -19,12 +20,10 @@ import { reviewResearchPacket } from "./research-ledger.js";
 import { MusicLibraryStore } from "./music-library.js";
 
 const execFile = promisify(execFileCallback);
-const CHINESE_PREVIEW_VOICES = [
-  "Tingting",
-  "Eddy (中文（中国大陆）)",
-  "Flo (中文（中国大陆）)",
-  "Reed (中文（中国大陆）)",
-];
+const FFMPEG_PATH = process.env.FFMPEG_PATH ?? "ffmpeg";
+const FFPROBE_PATH = process.env.FFPROBE_PATH ?? "ffprobe";
+const LOCAL_SPEECH_PATH = process.env.TOKEN_TALK_SPEECH_PATH
+  ?? (process.platform === "darwin" ? "/usr/bin/say" : "espeak-ng");
 const TABLE_READ_SPEECH_RATE = "132";
 
 export class LocalProductionExecutor implements NodeExecutor {
@@ -217,6 +216,13 @@ export class LocalProductionExecutor implements NodeExecutor {
     if (!voiceSelectionsExactlyMatch(lines, selections)) {
       return failure("local-production-engine", "voice-map-required-v1", "脚本角色与声音方案不一致，请重新运行声音编排。");
     }
+    const invalidLocalVoice = selections.some((selection) =>
+      selection.providerId === "local-macos-say"
+      && (typeof selection.voiceId !== "string" || !PREVIEW_VOICE_IDS.has(selection.voiceId)),
+    );
+    if (invalidLocalVoice) {
+      return failure("local-production-engine", "preview-voice-migration-required-v1", "声音方案来自另一套运行环境，请重新运行声音编排后再生成桌读。");
+    }
     if (!musicCuePlanReady(run)) {
       return failure("local-production-engine", "music-cue-plan-required-v1", "配乐方案尚未生成，请重新运行配乐与留白。");
     }
@@ -257,34 +263,35 @@ export class LocalProductionExecutor implements NodeExecutor {
         ? [[selection.role, selection.voiceId] as const]
         : [],
     ));
-    const voiceMap = Object.fromEntries(speakers.map((speaker, index) => [
-      speaker,
-      selectedVoices.get(speaker) ?? CHINESE_PREVIEW_VOICES[index % CHINESE_PREVIEW_VOICES.length],
-    ]));
+    const voiceMap = Object.fromEntries(speakers.map((speaker, index) => {
+      const selectedVoice = selectedVoices.get(speaker);
+      return [speaker, selectedVoice && PREVIEW_VOICE_IDS.has(selectedVoice)
+        ? selectedVoice
+        : PREVIEW_VOICES[index % PREVIEW_VOICES.length]?.id ?? PREVIEW_VOICES[0].id];
+    }));
+    const intermediateExtension = process.platform === "darwin" ? "aiff" : "wav";
+    const pauseCodec = process.platform === "darwin" ? "pcm_s16be" : "pcm_s16le";
 
     try {
       const timelineFiles: string[] = [];
       const pauseFiles = new Map<number, string>();
       for (const [index, line] of lines.entries()) {
-        const linePath = join(temporaryDirectory, `line-${String(index).padStart(3, "0")}.aiff`);
+        const linePath = join(temporaryDirectory, `line-${String(index).padStart(3, "0")}.${intermediateExtension}`);
         timelineFiles.push(linePath);
-        await execFile("/usr/bin/say", [
-          "-v",
-          voiceMap[line.speaker ?? "旁白"] ?? CHINESE_PREVIEW_VOICES[0] ?? "Tingting",
-          "-r",
-          TABLE_READ_SPEECH_RATE,
-          "-o",
+        await renderPreviewLine(
           linePath,
           line.text,
-        ], { signal });
+          voiceMap[line.speaker ?? "旁白"] ?? PREVIEW_VOICES[0].id,
+          signal,
+        );
         const pauseAfterMs = Math.max(0, Math.min(10_000, line.pauseAfterMs ?? 0));
         if (pauseAfterMs > 0) {
           let pausePath = pauseFiles.get(pauseAfterMs);
           if (!pausePath) {
-            pausePath = join(temporaryDirectory, `pause-${pauseAfterMs}.aiff`);
-            await execFile("/opt/homebrew/bin/ffmpeg", [
+            pausePath = join(temporaryDirectory, `pause-${pauseAfterMs}.${intermediateExtension}`);
+            await execFile(FFMPEG_PATH, [
               "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
-              "-t", (pauseAfterMs / 1_000).toFixed(3), "-c:a", "pcm_s16be", pausePath,
+              "-t", (pauseAfterMs / 1_000).toFixed(3), "-c:a", pauseCodec, pausePath,
             ], { signal });
             pauseFiles.set(pauseAfterMs, pausePath);
           }
@@ -293,7 +300,7 @@ export class LocalProductionExecutor implements NodeExecutor {
       }
       const manifestPath = join(temporaryDirectory, "concat.txt");
       await writeFile(manifestPath, timelineFiles.map((file) => `file '${file.replaceAll("'", "'\\''")}'`).join("\n"), "utf8");
-      await execFile("/opt/homebrew/bin/ffmpeg", [
+      await execFile(FFMPEG_PATH, [
         "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", manifestPath,
         "-c:a", "aac", "-b:a", "128k", dryPath,
       ], { signal });
@@ -311,6 +318,7 @@ export class LocalProductionExecutor implements NodeExecutor {
           targetMinutes,
           sha256,
           voiceMap,
+          previewBackend: process.platform === "darwin" ? "macos-say" : "espeak-ng",
           mixedAssetIds: mix.mixedAssetIds,
           releaseReady: false,
           note: "零现金桌读，仅用于检查节奏、错字和结构；正式发行前必须重新选角、混音并完成授权检查。",
@@ -399,7 +407,7 @@ export class LocalProductionExecutor implements NodeExecutor {
         }
         const manifestPath = join(temporaryDirectory, "concat.txt");
         await writeFile(manifestPath, chunkFiles.map((file) => `file '${file.replaceAll("'", "'\\''")}'`).join("\n"), "utf8");
-        await execFile("/opt/homebrew/bin/ffmpeg", [
+        await execFile(FFMPEG_PATH, [
           "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", manifestPath,
           "-c:a", "copy", dryPath,
         ], { signal });
@@ -552,7 +560,7 @@ export class LocalProductionExecutor implements NodeExecutor {
       labels.push(label);
     }
     filters.push(`${labels.join("")}amix=inputs=${labels.length}:duration=first:dropout_transition=0[out]`);
-    await execFile("/opt/homebrew/bin/ffmpeg", [
+    await execFile(FFMPEG_PATH, [
       "-y", "-loglevel", "error", "-i", dryPath, ...inputs,
       "-filter_complex", filters.join(";"), "-map", "[out]",
       "-c:a", outputPath.endsWith(".mp3") ? "libmp3lame" : "aac", "-b:a", "128k", outputPath,
@@ -811,7 +819,7 @@ function voiceCasting(
     && selectedProviders.size === 1
     && voiceSelectionsExactlyMatch(lines, selections)
     && selections.every((selection) => {
-      if (selection.providerId === "local-macos-say") return typeof selection.voiceId === "string" && selection.voiceId.trim().length > 0;
+      if (selection.providerId === "local-macos-say") return typeof selection.voiceId === "string" && PREVIEW_VOICE_IDS.has(selection.voiceId);
       return selection.providerId === "elevenlabs-v3"
         && isValidElevenLabsVoiceId(selection.voiceId)
         && typeof selection.voiceId === "string"
@@ -821,7 +829,7 @@ function voiceCasting(
   const defaultSelections = roles.map((role, index) => ({
     role,
     providerId: "local-macos-say",
-    voiceId: CHINESE_PREVIEW_VOICES[index % CHINESE_PREVIEW_VOICES.length],
+    voiceId: PREVIEW_VOICES[index % PREVIEW_VOICES.length]?.id ?? PREVIEW_VOICES[0].id,
     use: "preview_only",
   }));
   const plan = {
@@ -835,7 +843,7 @@ function voiceCasting(
     ...(catalogError ? { catalogError } : {}),
     rules: [
       "角色严格按本期 cast 计划映射，不默认固定双人或固定音色",
-      "macOS 系统声音只用于零现金桌读，不作为发行母带",
+      "系统桌读声音只用于零现金预听，不作为发行母带",
       "免费额度不等于商用授权；声音复刻必须保存明确同意记录",
     ],
   };
@@ -844,7 +852,7 @@ function voiceCasting(
 
 function voiceProviderCandidates(characters: number): Array<Record<string, unknown>> {
   return [
-    { providerId: "local-macos-say", label: "macOS 系统配音", estimatedCostCny: 0, configured: true, executable: true, releaseUse: "preview_only", note: "零现金、最快，用于结构和节奏检查" },
+    { providerId: "local-macos-say", label: "系统桌读预听", estimatedCostCny: 0, configured: true, executable: true, releaseUse: "preview_only", voices: PREVIEW_VOICES.map(({ id, label }) => ({ id, label })), note: "零现金、最快，用于结构和节奏检查；不可直接发行" },
     { providerId: "alibaba-qwen-tts", label: "Qwen3-TTS Flash", estimatedCostCny: roundCost(characters / 10_000 * 0.8), configured: Boolean(process.env.DASHSCOPE_API_KEY), executable: false, releaseUse: "terms_review", freeQuota: "已完成成本评估，当前版本尚未接通执行适配器" },
     { providerId: "volcengine-doubao-tts", label: "豆包语音合成大模型", estimatedCostCny: roundCost(characters / 10_000 * 4.5), configured: Boolean(process.env.ARK_API_KEY), executable: false, releaseUse: "terms_review", note: "已完成成本评估，当前版本尚未接通执行适配器" },
     { providerId: "elevenlabs-v3", label: "ElevenLabs v3", estimatedCostCny: estimateElevenLabsCostCny(characters), configured: Boolean(process.env.ELEVENLABS_API_KEY), executable: Boolean(process.env.ELEVENLABS_API_KEY), releaseUse: "paid_plan_only", freeQuota: "免费层仅限非商用且需署名，以当前账户条款为准" },
@@ -1366,12 +1374,23 @@ function safeFileSegment(value: string): string {
 }
 
 async function probeAudioDuration(filePath: string): Promise<number> {
-  const { stdout } = await execFile("/opt/homebrew/bin/ffprobe", [
+  const { stdout } = await execFile(FFPROBE_PATH, [
     "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", filePath,
   ], { timeout: 10_000 });
   const duration = Number(stdout.trim());
   if (!Number.isFinite(duration) || duration <= 0) throw new Error("无法读取干声音频时长。");
   return duration;
+}
+
+async function renderPreviewLine(filePath: string, text: string, voiceId: string, signal: AbortSignal): Promise<void> {
+  const voice = PREVIEW_VOICES.find((candidate) => candidate.id === voiceId) ?? PREVIEW_VOICES[0];
+  if (process.platform === "darwin") {
+    await execFile(LOCAL_SPEECH_PATH, ["-v", voice.macosVoice, "-r", TABLE_READ_SPEECH_RATE, "-o", filePath, text], { signal });
+    return;
+  }
+  await execFile(LOCAL_SPEECH_PATH, [
+    "-v", "cmn", "-s", String(voice.linuxRate), "-p", String(voice.linuxPitch), "-w", filePath, text,
+  ], { signal });
 }
 
 function cueStartSeconds(

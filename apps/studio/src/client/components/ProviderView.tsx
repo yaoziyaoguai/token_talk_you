@@ -1,5 +1,6 @@
 import type { ProviderProfile } from "@token-talk/domain";
 import type { MusicAsset, StudioBootstrap, VoiceCatalog } from "../../shared/api.js";
+import { PREVIEW_VOICES } from "../../shared/preview-voices.js";
 import { ChevronDown, Headphones, LibraryBig, LoaderCircle, Mic2, Music2, Plus, SlidersHorizontal } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { StudioApi, studioPath } from "../api.js";
@@ -94,7 +95,7 @@ export function ProviderView({ data }: { data: StudioBootstrap }) {
         <div className="section-heading compact"><h2>节目声音库</h2><span>{voiceLoading ? "读取中" : `${voiceCatalog?.voices.length ?? 0} 个账户音色`}</span></div>
         <div className="voice-library-ledger">
           <header><Mic2 size={17} /><span><strong>桌读声音</strong><small>零现金、仅用于检查脚本与节奏</small></span><em>本机可用</em></header>
-          <div className="local-voice-list">{["Tingting", "Eddy", "Flo", "Reed"].map((voice) => <span key={voice}><Headphones size={14} />{voice}<small>非发行母带</small></span>)}</div>
+          <div className="local-voice-list">{PREVIEW_VOICES.map((voice) => <span key={voice.id}><Headphones size={14} />{voice.label}<small>非发行母带</small></span>)}</div>
           <header><Mic2 size={17} /><span><strong>发行声音候选</strong><small>来自当前 ElevenLabs 账户，制作时按角色选择</small></span><em>{voiceCatalog?.warning ? "目录不可用" : voiceCatalog?.configured ? "目录已验证" : "未配置"}</em></header>
           {voiceCatalog?.voices.length ? <div className="account-voice-list">{voiceCatalog.voices.map((voice) => <article key={voice.voiceId}><span><strong>{voice.name}</strong><small>{voiceMeta(voice)}</small></span>{voice.previewUrl ? <audio controls preload="none" src={voice.previewUrl} aria-label={`试听声音：${voice.name}`}>当前浏览器无法播放音频。</audio> : <em>暂无试听</em>}</article>)}</div> : voiceLoading ? <div className="voice-catalog-state"><LoaderCircle className="is-spinning" size={17} />正在读取账户音色</div> : <div className="voice-catalog-state"><Headphones size={17} /><span>{voiceCatalog?.warning ?? voiceError ?? "配置发行声音服务后，这里会显示可选音色；本地桌读仍然可用。"}</span></div>}
           {voiceCatalog?.configured && voiceCatalog.voices.length > 0 ? <p className="voice-rights-note">账户可用不等于自动获得全部商业权利，登记母带时仍需确认音色与声音复刻授权。</p> : null}

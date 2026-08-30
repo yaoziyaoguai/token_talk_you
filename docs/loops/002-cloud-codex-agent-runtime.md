@@ -52,7 +52,7 @@ Read-only inspection of the `aliyun` host confirmed:
 - [x] Human edits invalidate only dependent work and automatically re-enter validation/audit without requiring a separate approval click.
 - [x] The workflow has exactly one mandatory human spend gate before release TTS, bound to exact script, voice, rights, provider, model, estimate, and one attempt.
 - [x] TTS, FFmpeg/ffprobe checks, loudness, duration, hashes, rights completeness, and release checks remain deterministic where possible.
-- [ ] Docker, systemd, Nginx, backup, retention, health check, GitHub Actions deployment, and rollback assets are tested locally without reading production secrets.
+- [x] Docker, systemd, Nginx, backup, retention, health check, GitHub Actions deployment, and rollback assets are tested locally without reading production secrets.
 - [ ] After explicit production-change approval, GitHub Actions deploys to Alibaba Cloud and a real cloud Codex task is verified end to end from the Web workflow.
 
 ## Stop Conditions
@@ -70,7 +70,7 @@ Read-only inspection of the `aliyun` host confirmed:
 | discover | completed | VideoFactory graph/query, broker and deployment review, read-only Alibaba Cloud runtime inspection |
 | plan | completed | This loop contract and the architecture decisions in `DESIGN.md` |
 | implement | completed locally | Token Talk broker, Agent loop, editable versions, TTS lock, release editorial, Podcasting 2.0 package, loudness QC, and deployment assets |
-| verify | completed locally with one environment gap | 259 unit/integration tests, 4 desktop/mobile E2E tests, typecheck, production build and bundle smoke passed; Compose config parsed; local Docker image build was not run because the Colima daemon was stopped |
+| verify | completed locally | 259 unit/integration tests, 4 desktop/mobile E2E tests, typecheck, production build and bundle smoke passed; the hardened Linux image built and ran as non-root with a read-only root filesystem; eSpeak NG generated Mandarin audio and FFmpeg/ffprobe produced and measured AAC/M4A output |
 | review | completed locally | Real 30-minute Codex episode path, browser visual audit at 1440 and 390 px, code boundary review, shell syntax, YAML and deployment configuration checks |
 | ship | pending | Explicitly approved Alibaba Cloud deployment with health and rollback evidence |
 | learn | completed locally | Long-form role mapping, release standards, provider constraints, real-run findings and operating limits recorded in design and research notes |
@@ -82,4 +82,4 @@ Read-only inspection of the `aliyun` host confirmed:
 - `pnpm test:e2e`: four desktop/mobile workflow and locked-chapter cases passed.
 - `bash scripts/smoke-production-build.sh`: production bundle, health endpoint, SPA fallback and forged Host rejection passed.
 - `docker-compose ... config`: production Compose configuration parsed successfully without reading production secrets.
-- `docker build`: not executed because the local Colima Docker daemon was not running; GitHub Actions retains Docker build and image smoke as mandatory pre-deploy checks.
+- `docker build`: passed with the Alibaba Cloud Debian mirror, including the production image health check and the Linux Mandarin table-read media chain.

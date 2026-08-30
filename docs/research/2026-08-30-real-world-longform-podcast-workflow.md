@@ -56,7 +56,7 @@ Token Talk 不是把一段提示词直接送进 TTS。15–60 分钟乃至更长
 ## 免费资源策略
 
 - 研究发现：OpenAlex、Crossref、Open Library、arXiv、Wikipedia、Hacker News 公共接口，先用元数据和公开摘要建立可复查资料包。
-- 本地生产：Codex 订阅承担规划、编剧和独立审计；FFmpeg/ffprobe 承担媒体测量；macOS `say` 只做零成本桌读预览。
+- 制作底座：云端 Codex 订阅承担规划、编剧和独立审计；FFmpeg/ffprobe 承担媒体测量；macOS `say` 与 Linux eSpeak NG 只做零成本桌读预览。
 - 音乐：本地素材库只接受已登记权利的资产；没有可用资产时自动选择 silence，不把“免费试听”当作商业授权。
 - 声音：开源 TTS 只作为待验证供应路径；正式发行前仍要确认模型许可、声音权利和角色声音一致性。
 
