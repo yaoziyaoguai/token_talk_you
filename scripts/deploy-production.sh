@@ -77,7 +77,8 @@ validate_supporting_image_refs() {
     process.stdin.on("end", () => {
       const config = JSON.parse(source);
       for (const serviceName of ["newsnow", "dailyhot"]) {
-        const image = config.services?.[serviceName]?.image;
+        const service = config.services && config.services[serviceName];
+        const image = service && service.image;
         if (typeof image !== "string" || image.length === 0) process.exitCode = 1;
         else process.stdout.write(`${image}\n`);
       }
