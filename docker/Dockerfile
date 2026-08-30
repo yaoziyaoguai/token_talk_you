@@ -21,7 +21,7 @@ RUN pnpm build
 
 FROM ${NODE_IMAGE} AS runtime
 
-ARG DEBIAN_MIRROR_ORIGIN=http://mirrors.aliyun.com
+ARG DEBIAN_MIRROR_ORIGIN=http://deb.debian.org
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
