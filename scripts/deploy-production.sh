@@ -106,6 +106,18 @@ previous_broker_release="$(readlink -f "$broker_root/current" 2>/dev/null || tru
 deployment_mutated=0
 deployment_committed=0
 
+preserve_previous_app() {
+  [[ -n "$previous_image" ]] || return 0
+
+  if docker image inspect "$previous_image" >/dev/null 2>&1; then
+    docker tag "$previous_image" token-talk:rollback
+  else
+    echo "上一版本镜像仅存在于运行容器，正在固化回滚快照。"
+    docker commit "$container" token-talk:rollback >/dev/null
+  fi
+  docker image inspect token-talk:rollback >/dev/null
+}
+
 rollback() {
   local failed=0
   if [[ -n "$previous_broker_release" && "$previous_broker_release" == "$broker_root"/releases/* && -d "$previous_broker_release" ]]; then
@@ -116,10 +128,13 @@ rollback() {
     echo "没有可恢复的 broker release。" >&2
     failed=1
   fi
-  if [[ -n "$previous_image" ]]; then
-    docker tag "$previous_image" token-talk:candidate || failed=1
-    "${compose[@]}" up --detach --no-deps --force-recreate --pull never app || failed=1
-    wait_for_app || failed=1
+  if [[ -n "$previous_image" ]] && docker image inspect token-talk:rollback >/dev/null 2>&1; then
+    if docker tag token-talk:rollback token-talk:candidate; then
+      "${compose[@]}" up --detach --no-deps --force-recreate --pull never app || failed=1
+      wait_for_app || failed=1
+    else
+      failed=1
+    fi
   else
     echo "没有可恢复的应用镜像。" >&2
     failed=1
@@ -160,12 +175,9 @@ install_broker_release() {
 }
 
 check_codex_upstream
-prepare_images
 "$repository_root/scripts/backup-production.sh"
-
-if [[ -n "$previous_image" ]]; then
-  docker tag "$previous_image" token-talk:rollback
-fi
+preserve_previous_app
+prepare_images
 install_broker_release
 deployment_mutated=1
 
