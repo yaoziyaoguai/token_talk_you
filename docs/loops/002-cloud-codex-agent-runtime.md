@@ -1,7 +1,7 @@
 # Loop 002: Cloud Codex Agent Runtime
 
 - Date: 2026-08-29
-- Status: deployment authorized; cloud ship and end-to-end verification in progress
+- Status: cloud deployment active; zero-cash end-to-end acceptance repair in progress
 - Branch: `codex/token-talk-loop`
 - Objective: make the Alibaba Cloud deployment the production runtime for Token Talk, with Codex-backed semantic nodes, bounded autonomous audit-and-repair loops, editable node versions, and one mandatory human gate before paid TTS.
 
@@ -45,6 +45,8 @@ Read-only inspection of the `aliyun` host confirmed:
 - Token Talk keeps the same single-task host boundary but gives each schema-bounded Codex task up to 720 seconds so long-form research, script generation, and independent audits do not fail at the former VideoFactory-sized timeout.
 - The host has about 7.1 GiB RAM and 5.9 GiB free on a 40 GiB root volume. Token Talk must bound broker concurrency, image size, task scratch data, media retention, and Docker layers.
 
+The first full cloud rehearsal on 2026-08-31 completed free research, claim synthesis, evidence audit and repair, dynamic four-role casting, a three-chapter blueprint, segmented long-form writing, independent script audits, release copy, and visual direction. It also exposed two workflow-contract defects before paid TTS: a final repair could leave the audit stale while later production nodes continued, and Codex used valid cast role IDs while the voice layer expected role names. The follow-up implementation now gates release copy, visual direction, voice casting, and music planning on both the repair node and the latest script audit; normalizes role IDs to canonical names; and rejects unknown speakers, chapters, or claims before persistence.
+
 ## Success Criteria
 
 - [x] A Token Talk broker accepts only versioned, schema-bounded podcast task kinds over a group-restricted Unix socket.
@@ -73,14 +75,14 @@ Read-only inspection of the `aliyun` host confirmed:
 | discover | completed | VideoFactory graph/query, broker and deployment review, read-only Alibaba Cloud runtime inspection |
 | plan | completed | This loop contract and the architecture decisions in `DESIGN.md` |
 | implement | completed locally | Token Talk broker, Agent loop, editable versions, TTS lock, release editorial, Podcasting 2.0 package, loudness QC, and deployment assets |
-| verify | completed locally | 292 unit/integration tests, 4 desktop/mobile E2E tests, typecheck, production build, Compose validation and bundle smoke passed; the hardened Linux image built and ran as non-root with a read-only root filesystem; eSpeak NG generated Mandarin audio and FFmpeg/ffprobe produced and measured AAC/M4A output |
+| verify | completed locally | 299 unit/integration tests, 4 desktop/mobile E2E tests, typecheck, production build, Compose validation and bundle smoke passed; the hardened Linux image built and ran as non-root with a read-only root filesystem; eSpeak NG generated Mandarin audio and FFmpeg/ffprobe produced and measured AAC/M4A output |
 | review | completed locally | Real 30-minute Codex episode path, browser visual audit at 1440 and 390 px, code boundary review, shell syntax, YAML and deployment configuration checks |
 | ship | in progress | Production change is authorized; GitHub Actions deployment, public health checks and zero-cash cloud Agent Loop evidence remain required |
 | learn | completed locally | Long-form role mapping, release standards, provider constraints, real-run findings and operating limits recorded in design and research notes |
 
 ## Local Verification
 
-- `pnpm test`: 292 tests passed across Agent protocol, domain, workflow, broker and Studio.
+- `pnpm test`: 299 tests passed across Agent protocol, domain, workflow, broker and Studio.
 - `pnpm typecheck && pnpm build`: passed; the browser bundle no longer imports Node-only crypto code.
 - `pnpm test:e2e`: four desktop/mobile workflow and locked-chapter cases passed.
 - `bash scripts/smoke-production-build.sh`: production bundle, health endpoint, SPA fallback and forged Host rejection passed.

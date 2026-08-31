@@ -546,6 +546,7 @@ describe("Studio API", () => {
       showNotes: ["00:00 核对发行链", "07:00 证据与边界", "14:00 结论与边界"],
       keywords: ["播客制作", "发行审计"],
     }, NOW);
+    run = reviseArtifact(run, "artifact-script-audit", { verdict: "pass", findings: [] }, NOW);
     for (const node of run.nodes) node.status = "succeeded";
     run.nodes.find((node) => node.id === "audio-mix")!.status = "ready";
     run.nodes.find((node) => node.id === "visual-pack")!.status = "ready";
@@ -1510,6 +1511,173 @@ describe("Studio API", () => {
     await app.close();
   });
 
+  it("does not create an unreviewed script repair after the final audit round", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-script-audit-limit");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-script-audit-limit",
+      opportunityId: "opportunity-script-audit-limit",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    const audit = run.nodes.find((node) => node.capability === "script.audit");
+    const repair = run.nodes.find((node) => node.capability === "script.repair");
+    const release = run.nodes.find((node) => node.capability === "release.copy");
+    if (!audit || !repair || !release) throw new Error("script audit loop missing");
+    audit.status = "succeeded";
+    repair.status = "ready";
+    release.status = "ready";
+    const auditArtifact = run.artifacts.find((artifact) => artifact.id === "artifact-script-audit");
+    const auditVersion = auditArtifact?.versions.find((version) => version.id === auditArtifact.activeVersionId);
+    if (!auditVersion) throw new Error("script audit artifact missing");
+    auditVersion.data = { verdict: "revise", findings: [{ id: "finding-final", severity: "warning" }] };
+    run.executionReceipts = Array.from({ length: 4 }, (_, index) => ({
+      id: `receipt-script-audit-${index + 1}`,
+      nodeId: audit.id,
+      providerId: "openai-codex-subscription",
+      modelId: "codex-test",
+      status: "succeeded" as const,
+      billing: "subscription" as const,
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+    }));
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn();
+    const service = await StudioService.create(root, () => NOW, undefined, null, { execute });
+
+    const result = await service.continueAgentLoop(run.id, undefined, 1);
+
+    expect(result).toMatchObject({ reason: "repair_limit", stoppedAtNodeId: audit.id, executedNodeIds: [] });
+    expect(execute).not.toHaveBeenCalled();
+    await service.close();
+  });
+
+  it("allows the final bounded script audit to close the loop when it passes", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-script-final-pass");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-script-final-pass",
+      opportunityId: "opportunity-script-final-pass",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    const audit = run.nodes.find((node) => node.capability === "script.audit");
+    const repair = run.nodes.find((node) => node.capability === "script.repair");
+    if (!audit || !repair) throw new Error("script audit loop missing");
+    audit.status = "succeeded";
+    repair.status = "ready";
+    run.nodes.find((node) => node.id === "showrunner-assembly")!.status = "succeeded";
+    const auditArtifact = run.artifacts.find((artifact) => artifact.id === "artifact-script-audit");
+    const auditVersion = auditArtifact?.versions.find((version) => version.id === auditArtifact.activeVersionId);
+    if (!auditVersion) throw new Error("script audit artifact missing");
+    auditVersion.data = { verdict: "pass", findings: [] };
+    run.executionReceipts = Array.from({ length: 4 }, (_, index) => ({
+      id: `receipt-script-final-pass-${index + 1}`,
+      nodeId: audit.id,
+      providerId: "openai-codex-subscription",
+      modelId: "codex-test",
+      status: "succeeded" as const,
+      billing: "subscription" as const,
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+    }));
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn(async ({ run: executionRun, node }: NodeExecutionContext) => {
+      const artifact = executionRun.artifacts.find((candidate) => candidate.id === node.outputArtifactIds[0]);
+      const current = artifact?.versions.find((version) => version.id === artifact.activeVersionId)?.data;
+      return {
+        status: "succeeded" as const,
+        providerId: "test-script-repair",
+        modelId: "pass-through-v1",
+        billing: "local_compute" as const,
+        estimatedCostCny: 0,
+        actualCostCny: 0,
+        startedAt: NOW,
+        finishedAt: NOW,
+        outputs: { [node.outputArtifactIds[0]!]: current },
+      };
+    });
+    const service = await StudioService.create(root, () => NOW, undefined, null, { execute });
+
+    const result = await service.continueAgentLoop(run.id, undefined, 1);
+
+    expect(result).toMatchObject({ reason: "continue_available_work", executedNodeIds: [repair.id] });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(result.run.nodes.find((node) => node.id === audit.id)?.status).toBe("succeeded");
+    await service.close();
+  });
+
+  it("requires another script audit after a revise repair even when the replacement is byte-identical", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-script-reaudit");
+    let run = createRunFromCandidate(candidate, {
+      id: "run-script-reaudit",
+      opportunityId: "opportunity-script-reaudit",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run = reviseArtifact(run, "artifact-script", {
+      status: "draft",
+      lines: [{ segmentId: "opening", speaker: "主持", text: "保留原稿。", claimIds: [] }],
+    }, NOW);
+    run = reviseArtifact(run, "artifact-script-audit", {
+      verdict: "revise",
+      findings: [{ id: "finding-1", severity: "warning", repairInstruction: "修正听感" }],
+    }, NOW);
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    const audit = run.nodes.find((node) => node.capability === "script.audit");
+    const repair = run.nodes.find((node) => node.capability === "script.repair");
+    if (!audit || !repair) throw new Error("script audit loop missing");
+    audit.status = "succeeded";
+    repair.status = "ready";
+    run.nodes.find((node) => node.id === "showrunner-assembly")!.status = "succeeded";
+    run.status = "active";
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn(async ({ run: executionRun, node }: NodeExecutionContext) => {
+      const artifact = executionRun.artifacts.find((candidate) => candidate.id === node.outputArtifactIds[0]);
+      const current = artifact?.versions.find((version) => version.id === artifact.activeVersionId)?.data;
+      return {
+        status: "succeeded" as const,
+        providerId: "test-script-repair",
+        modelId: "byte-identical-v1",
+        billing: "local_compute" as const,
+        estimatedCostCny: 0,
+        actualCostCny: 0,
+        startedAt: NOW,
+        finishedAt: NOW,
+        outputs: { [node.outputArtifactIds[0]!]: current },
+      };
+    });
+    const service = await StudioService.create(root, () => NOW, undefined, null, { execute });
+
+    const repaired = await service.executeNode(run.id, repair.id);
+
+    expect(repaired.nodes.find((node) => node.id === repair.id)?.status).toBe("succeeded");
+    expect(repaired.nodes.find((node) => node.id === audit.id)).toMatchObject({
+      status: "stale",
+      staleReason: "脚本返修已生成新版本，需要独立审校确认",
+    });
+    await service.close();
+  });
+
   it("stops automatic failed-node recovery after three failed or rejected attempts", async () => {
     const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
     const snapshot = await repository.load();
@@ -1782,7 +1950,11 @@ describe("Studio API", () => {
         startedAt: NOW,
         finishedAt: NOW,
         outputs: {
-          [artifactId ?? "missing"]: node.capability === "script.repair" ? current : { generatedBy: node.id },
+          [artifactId ?? "missing"]: node.capability === "script.audit"
+            ? { verdict: "pass", findings: [] }
+            : node.capability === "script.repair" || node.id === "research-repair"
+              ? current
+              : { generatedBy: node.id },
         },
       };
     });
@@ -1801,7 +1973,7 @@ describe("Studio API", () => {
 
     const executedNodeIds: string[] = [];
     let result: Record<string, unknown> | undefined;
-    for (let step = 0; step < 20; step += 1) {
+    for (let step = 0; step < 40; step += 1) {
       const response = await app.inject({ method: "POST", url: "/api/runs/run-agent-loop/agent-loop" });
       expect(response.statusCode).toBe(200);
       result = response.json() as Record<string, unknown>;
@@ -1811,7 +1983,10 @@ describe("Studio API", () => {
       if (result.reason !== "continue_available_work") break;
     }
 
-    expect(result).toMatchObject({
+    expect(result, JSON.stringify({
+      executedNodeIds,
+      nodes: (result?.run as typeof run).nodes.map((node) => ({ id: node.id, status: node.status })),
+    })).toMatchObject({
       reason: "awaiting_spend_authorization",
       stoppedAtNodeId: "audio-mix",
     });
@@ -1903,6 +2078,68 @@ describe("Studio API", () => {
       expect(completed.json()).not.toHaveProperty("currentNodeId");
     });
     expect(execute).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("clears a previous stop marker when an Agent Loop retry is actively executing", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-server-owned-retry-progress");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-server-owned-retry-progress",
+      opportunityId: "opportunity-server-owned-retry-progress",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes[0]!.status = "ready";
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+
+    let resolveRetry: ((outcome: NodeExecutionOutcome) => void) | undefined;
+    const execute = vi.fn(({ node }: NodeExecutionContext) => execute.mock.calls.length === 1
+      ? Promise.resolve<NodeExecutionOutcome>({
+          status: "failed",
+          providerId: "retry-progress",
+          modelId: node.capability,
+          billing: "local_compute",
+          estimatedCostCny: 0,
+          actualCostCny: 0,
+          startedAt: NOW,
+          finishedAt: NOW,
+          errorMessage: "temporary failure",
+        })
+      : new Promise<NodeExecutionOutcome>((resolve) => { resolveRetry = resolve; }));
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+    const started = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.id}/agent-loop-jobs`,
+      headers: { "idempotency-key": "agent-loop-retry-progress-001" },
+    });
+    const jobId = started.json().id as string;
+
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    const active = await app.inject({ method: "GET", url: `/api/runs/${run.id}/agent-loop-jobs/${jobId}` });
+    expect(active.json()).toMatchObject({ status: "running", currentNodeId: run.nodes[0]!.id });
+    expect(active.json()).not.toHaveProperty("stoppedAtNodeId");
+
+    resolveRetry?.({
+      status: "needs_human",
+      providerId: "retry-progress",
+      modelId: run.nodes[0]!.capability,
+      billing: "local_compute",
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      errorMessage: "stop test",
+    });
+    await vi.waitFor(async () => {
+      const stopped = await app.inject({ method: "GET", url: `/api/runs/${run.id}/agent-loop-jobs/${jobId}` });
+      expect(stopped.json().status).toBe("blocked");
+    });
     await app.close();
   });
 

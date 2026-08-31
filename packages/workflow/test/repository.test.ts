@@ -133,11 +133,44 @@ describe("JsonStudioRepository", () => {
     expect(migrated.runs[0]?.nodes.find((node) => node.id === "release-editorial")).toMatchObject({
       role: "发行编辑",
       capability: "release.copy",
-      prerequisiteNodeIds: ["script-repair"],
+      prerequisiteNodeIds: ["script-audit", "script-repair"],
     });
+    for (const nodeId of ["visual-pack", "voice-casting", "music-cue-sheet"]) {
+      expect(migrated.runs[0]?.nodes.find((node) => node.id === nodeId)?.prerequisiteNodeIds)
+        .toEqual(["script-audit", "script-repair"]);
+    }
     expect(migrated.runs[0]?.nodes.find((node) => node.id === "publish-package")).toMatchObject({
       inputArtifactIds: expect.arrayContaining(["artifact-release-copy"]),
       prerequisiteNodeIds: expect.arrayContaining(["release-editorial"]),
     });
+  });
+
+  it("migrates existing production nodes behind the latest passing script audit", async () => {
+    const root = await mkdtemp(join(tmpdir(), "token-talk-audit-gate-"));
+    roots.push(root);
+    const legacy = createSeedSnapshot(NOW) as unknown as Record<string, any>;
+    const run = legacy.runs[0];
+    run.status = "active";
+    for (const nodeId of ["release-editorial", "visual-pack", "voice-casting", "music-cue-sheet"]) {
+      const node = run.nodes.find((candidate: { id: string }) => candidate.id === nodeId);
+      node.status = "succeeded";
+      node.prerequisiteNodeIds = ["script-repair"];
+    }
+    const auditArtifact = run.artifacts.find((artifact: { id: string }) => artifact.id === "artifact-script-audit");
+    const auditVersion = auditArtifact.versions.find((version: { id: string }) => version.id === auditArtifact.activeVersionId);
+    auditVersion.data = { verdict: "revise", findings: [{ id: "finding-1", severity: "warning" }] };
+    await writeFile(join(root, "studio.json"), `${JSON.stringify(legacy)}\n`, "utf8");
+
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const migrated = (await repository.load()).runs[0];
+
+    for (const nodeId of ["release-editorial", "visual-pack", "voice-casting", "music-cue-sheet"]) {
+      expect(migrated?.nodes.find((node) => node.id === nodeId)).toMatchObject({
+        status: "stale",
+        staleReason: "脚本返修后的独立审校尚未通过",
+        prerequisiteNodeIds: ["script-audit", "script-repair"],
+      });
+    }
+    expect(migrated?.status).toBe("active");
   });
 });

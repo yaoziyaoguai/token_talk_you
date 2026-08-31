@@ -361,8 +361,12 @@ describe("candidate adoption", () => {
     expect(run.nodes.find((node) => node.id === "release-editorial")).toMatchObject({
       role: "发行编辑",
       capability: "release.copy",
-      prerequisiteNodeIds: ["script-repair"],
+      prerequisiteNodeIds: ["script-audit", "script-repair"],
     });
+    for (const nodeId of ["visual-pack", "voice-casting", "music-cue-sheet"]) {
+      expect(run.nodes.find((node) => node.id === nodeId)?.prerequisiteNodeIds)
+        .toEqual(["script-audit", "script-repair"]);
+    }
     expect(run.artifacts.find((artifact) => artifact.id === "artifact-cast")?.versions[0]?.data).toMatchObject({ policy: "dynamic" });
     expect(run.artifacts.find((artifact) => artifact.id === "artifact-sources")?.versions[0]?.data).toMatchObject({
       status: "pending",

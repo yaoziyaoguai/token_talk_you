@@ -283,14 +283,11 @@ function productionContext(
   if (targetSegmentId && !targetSegment) throw new Error(`节目蓝图中不存在章节“${targetSegmentId}”。`);
   const targetMinutes = targetSegment ? Math.max(3, Math.round(numberValue(targetSegment.minutes) || 3)) : episodeTargetMinutes;
   const nominalTargetCharacters = Math.round(targetMinutes * CHARACTERS_PER_MINUTE);
-  const targetCharacters = retryFeedback?.includes("字，不符合")
-    ? Math.round(nominalTargetCharacters * (retryFeedback.includes("超出") ? 0.85 : 0.9))
-    : nominalTargetCharacters;
   const currentScript = targetSegment && outputArtifactId ? asRecord(activeArtifactData(run, outputArtifactId)) : undefined;
   return {
     title: run.title,
     targetMinutes,
-    targetCharacters,
+    targetCharacters: nominalTargetCharacters,
     brief: asRecord(activeArtifactData(run, "artifact-brief")),
     claims: verifiedClaims(run),
     evidenceSynthesis: asRecord(asRecord(activeArtifactData(run, "artifact-claims")).evidenceSynthesis),
@@ -447,10 +444,24 @@ function normalizeOutput(
     generatedBy,
   };
   if (capability === "script.segment" || capability === "script.repair") {
-    const generatedLines = asArray(output.lines);
+    const generatedLines = normalizeScriptLines(run, asArray(output.lines));
     const targetSegmentId = context.input?.segmentId;
     if (targetSegmentId && generatedLines.some((line) => asRecord(line).segmentId !== targetSegmentId)) {
       throw new Error("章节级重生成返回了目标章节之外的台词。");
+    }
+    const blueprintSegmentIds = asArray(asRecord(activeArtifactData(run, "artifact-blueprint")).segments)
+      .flatMap((segment) => stringValue(asRecord(segment).id) ?? []);
+    const generatedSegmentIds = new Set(generatedLines.flatMap((line) => stringValue(asRecord(line).segmentId) ?? []));
+    if (generatedLines.some((line) => !blueprintSegmentIds.includes(String(asRecord(line).segmentId ?? "")))) {
+      throw new Error("Codex 脚本包含当前节目蓝图之外的章节。");
+    }
+    if (!targetSegmentId && blueprintSegmentIds.some((segmentId) => !generatedSegmentIds.has(segmentId))) {
+      throw new Error("Codex 完整脚本没有覆盖节目蓝图中的全部章节。");
+    }
+    const knownClaimIds = new Set(verifiedClaims(run).flatMap((claim) => stringValue(claim.id) ?? []));
+    if (generatedLines.some((line) => asArray(asRecord(line).claimIds)
+      .some((claimId) => typeof claimId !== "string" || !knownClaimIds.has(claimId)))) {
+      throw new Error("Codex 脚本引用了当前事实账本之外的 claim。");
     }
     const targetMinutes = targetSegmentId
       ? numberValue(asArray(asRecord(activeArtifactData(run, "artifact-blueprint")).segments)
@@ -488,6 +499,24 @@ function normalizeOutput(
     releaseReady: false,
     generatedBy,
   };
+}
+
+function normalizeScriptLines(run: WorkflowRun, lines: unknown[]): Array<Record<string, unknown>> {
+  const roles = asArray(asRecord(activeArtifactData(run, "artifact-cast")).roles).map(asRecord);
+  const roleNames = new Set(roles.flatMap((role) => stringValue(role.name) ?? []));
+  const roleNameById = new Map(roles.flatMap((role) => {
+    const id = stringValue(role.id);
+    const name = stringValue(role.name);
+    return id && name ? [[id, name] as const] : [];
+  }));
+  if (roleNames.size === 0) throw new Error("脚本生成缺少已确认角色方案。");
+  return lines.map((value) => {
+    const line = asRecord(value);
+    const speaker = stringValue(line.speaker);
+    const canonicalSpeaker = speaker && roleNames.has(speaker) ? speaker : speaker ? roleNameById.get(speaker) : undefined;
+    if (!canonicalSpeaker) throw new Error(`Codex 脚本包含本期角色方案之外的说话人：${speaker ?? "未命名"}`);
+    return { ...line, speaker: canonicalSpeaker };
+  });
 }
 
 function verifiedResearchSources(run: WorkflowRun): Record<string, unknown>[] {

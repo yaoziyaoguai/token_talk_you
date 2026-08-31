@@ -813,7 +813,8 @@ export class StudioService {
           const jobIndex = snapshot.agentLoopJobs.findIndex((candidate) => candidate.id === agentLoopJobId && candidate.runId === runId);
           const job = snapshot.agentLoopJobs[jobIndex];
           if (!job || job.status !== "running") throw new AgentLoopStoppedError();
-          snapshot.agentLoopJobs[jobIndex] = { ...job, currentNodeId: nodeId, updatedAt: startedAt };
+          const { stoppedAtNodeId: _stoppedAtNodeId, reason: _reason, errorMessage: _errorMessage, ...activeJob } = job;
+          snapshot.agentLoopJobs[jobIndex] = { ...activeJob, currentNodeId: nodeId, updatedAt: startedAt };
         }
         snapshot.updatedAt = startedAt;
         await this.repository.save(snapshot);
@@ -903,6 +904,7 @@ export class StudioService {
         try {
           executed = applyNodeExecution(latestRun, nodeId, finalOutcome, this.now());
           retainScriptNodeUntilEveryChapterExists(executed, nodeId);
+          requireScriptReauditAfterRepair(executed, latestRun, nodeId, finalOutcome);
         } catch (error) {
           await this.nodeExecutor.discard?.(executionContext, finalOutcome);
           mediaCommitted = false;
@@ -995,6 +997,15 @@ export class StudioService {
       let blocker: Pick<AgentLoopResult, "stoppedAtNodeId" | "reason"> | undefined;
       for (const candidate of availableNodes) {
         if (candidate.id === "research-repair" && latestFreeResearchFailureWasDeadline(run)) continue;
+        if (candidate.capability === "script.repair") {
+          const auditNode = run.nodes.find((node) => node.capability === "script.audit");
+          if (auditNode
+            && completedAttempts(run, auditNode.id) >= boundedLoopLimit(auditNode)
+            && activeRecord(run, "artifact-script-audit").verdict !== "pass") {
+            blocker ??= { stoppedAtNodeId: auditNode.id, reason: "repair_limit" };
+            break;
+          }
+        }
         if (candidate.status === "failed") {
           const infrastructureRetry = candidate.id === "source-packet" && latestFreeResearchFailureWasDeadline(run);
           const dedicatedRepair = candidate.id === "source-packet" && !infrastructureRetry
@@ -1015,7 +1026,7 @@ export class StudioService {
         }
         if (isBoundedAgentLoop(candidate.capability) && boundedLoopAttempts(run, candidate) >= boundedLoopLimit(candidate)) {
           blocker ??= { stoppedAtNodeId: candidate.id, reason: "repair_limit" };
-          continue;
+          break;
         }
         if (!isNodeGraphExecutable(run, candidate)) continue;
         const plan = this.nodeExecutor.plan?.({ run, node: candidate }) ?? {
@@ -1325,6 +1336,21 @@ function retainScriptNodeUntilEveryChapterExists(run: WorkflowRun, nodeId: strin
     consumer.status = consumer.status === "succeeded" ? "stale" : "pending";
     consumer.staleReason = "逐章脚本尚未全部生成";
   }
+  run.status = "active";
+}
+
+function requireScriptReauditAfterRepair(
+  run: WorkflowRun,
+  previousRun: WorkflowRun,
+  nodeId: string,
+  outcome: NodeExecutionOutcome,
+): void {
+  if (nodeId !== "script-repair" || outcome.status !== "succeeded") return;
+  if (activeRecord(previousRun, "artifact-script-audit").verdict === "pass") return;
+  const auditNode = run.nodes.find((candidate) => candidate.capability === "script.audit");
+  if (!auditNode) return;
+  auditNode.status = "stale";
+  auditNode.staleReason = "脚本返修已生成新版本，需要独立审校确认";
   run.status = "active";
 }
 

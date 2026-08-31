@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexBrokerServer } from "../src/broker-server.js";
 import { buildCodexExecCommand, codexDiagnosticFromEvent, type BrokerExecutionResult, type BrokerTaskExecutor } from "../src/codex-executor.js";
 import { loadBrokerRuntimeConfig } from "../src/runtime-config.js";
+import { buildTaskPrompt, promptVersionFor } from "../src/task-prompts.js";
 
 let root: string | undefined;
 let broker: CodexBrokerServer | undefined;
@@ -115,6 +116,34 @@ describe("Token Talk Codex broker", () => {
     expect(codexDiagnosticFromEvent(JSON.stringify({ type: "turn.failed", error: { message: "schema is invalid" } }))).toBe("schema is invalid");
     expect(codexDiagnosticFromEvent(JSON.stringify({ type: "error", message: "model unavailable" }))).toBe("model unavailable");
     expect(codexDiagnosticFromEvent(JSON.stringify({ type: "item.completed", item: { text: "private task content" } }))).toBeUndefined();
+  });
+
+  it("keeps full-episode script repairs inside the original duration envelope", () => {
+    const request = {
+      protocolVersion: TOKEN_TALK_AGENT_PROTOCOL_VERSION,
+      requestId: "script-repair-duration-001",
+      kind: "script-repair" as const,
+      payload: { targetCharacters: 3_300 },
+    };
+
+    expect(promptVersionFor("script-repair")).toBe("token-talk/script-repair-v4");
+    expect(buildTaskPrompt(request)).toContain("targetCharacters 的 85% 到 120%");
+    expect(buildTaskPrompt(request)).toContain("实测字数和允许范围优先");
+    expect(buildTaskPrompt(request)).toContain("cast.roles[].name");
+  });
+
+  it("keeps script audits inside the script stage ownership boundary", () => {
+    const request = {
+      protocolVersion: TOKEN_TALK_AGENT_PROTOCOL_VERSION,
+      requestId: "script-audit-boundary-001",
+      kind: "script-audit" as const,
+      payload: { targetCharacters: 3_300 },
+    };
+    const prompt = buildTaskPrompt(request);
+
+    expect(promptVersionFor("script-audit")).toBe("token-talk/script-auditor-v4");
+    expect(prompt).toContain("85% 到 120% 内即通过");
+    expect(prompt).toContain("由后续 release.copy 节点负责");
   });
 });
 

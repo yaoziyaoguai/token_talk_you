@@ -359,9 +359,19 @@ describe("CodexAgentNodeExecutor", () => {
     const node = run?.nodes.find((candidate) => candidate.capability === "script.segment");
     const blueprint = run?.artifacts.find((artifact) => artifact.id === "artifact-blueprint");
     const script = node ? run?.artifacts.find((artifact) => artifact.id === node.outputArtifactIds[0]) : undefined;
+    const cast = run?.artifacts.find((artifact) => artifact.id === "artifact-cast");
     const blueprintVersion = blueprint?.versions.find((version) => version.id === blueprint.activeVersionId);
     const scriptVersion = script?.versions.find((version) => version.id === script.activeVersionId);
-    if (!run || !node || !blueprintVersion || !scriptVersion) throw new Error("script segment fixture missing");
+    const castVersion = cast?.versions.find((version) => version.id === cast.activeVersionId);
+    if (!run || !node || !blueprintVersion || !scriptVersion || !castVersion) throw new Error("script segment fixture missing");
+    castVersion.data = {
+      status: "draft",
+      policy: "dynamic",
+      roles: [
+        { id: "host", name: "主持", responsibility: "推进问题" },
+        { id: "guest", name: "来宾", responsibility: "提供反例" },
+      ],
+    };
     blueprintVersion.data = {
       status: "draft",
       segments: [
@@ -383,10 +393,10 @@ describe("CodexAgentNodeExecutor", () => {
       isConfigured: () => true,
       run: vi.fn(async () => ({
         output: { lines: [
-          { segmentId: "segment-2", speaker: "主持", text: longLine("新的分歧一"), claimIds: [] },
-          { segmentId: "segment-2", speaker: "来宾", text: longLine("新的分歧二"), claimIds: [] },
-          { segmentId: "segment-2", speaker: "主持", text: longLine("新的追问"), claimIds: [] },
-          { segmentId: "segment-2", speaker: "来宾", text: longLine("新的澄清"), claimIds: [] },
+          { segmentId: "segment-2", speaker: "host", text: longLine("新的分歧一"), claimIds: [] },
+          { segmentId: "segment-2", speaker: "guest", text: longLine("新的分歧二"), claimIds: [] },
+          { segmentId: "segment-2", speaker: "host", text: longLine("新的追问"), claimIds: [] },
+          { segmentId: "segment-2", speaker: "guest", text: longLine("新的澄清"), claimIds: [] },
         ] },
         trace: { taskKind: "script-segment" as const, promptVersion: "token-talk/segment-writer-v2", providerId: "openai-codex-subscription", modelId: "codex-test", reasoningEffort: "max" as const },
       })),
@@ -405,6 +415,7 @@ describe("CodexAgentNodeExecutor", () => {
     expect(client.run).toHaveBeenCalledWith(expect.objectContaining({
       kind: "script-segment",
       payload: expect.objectContaining({
+        targetCharacters: 1_760,
         targetSegment: expect.objectContaining({ id: "segment-2", title: "分歧" }),
         currentScript: expect.objectContaining({ lockedSegmentIds: ["segment-1"] }),
         retryFeedback: "上次脚本过长，请压缩重复解释。",
@@ -414,8 +425,8 @@ describe("CodexAgentNodeExecutor", () => {
       lockedSegmentIds: ["segment-1"],
       lines: [
         expect.objectContaining({ segmentId: "segment-1", text: "锁定的开场" }),
-        expect.objectContaining({ segmentId: "segment-2", text: expect.stringContaining("新的分歧一") }),
-        expect.objectContaining({ segmentId: "segment-2", text: expect.stringContaining("新的分歧二") }),
+        expect.objectContaining({ segmentId: "segment-2", speaker: "主持", text: expect.stringContaining("新的分歧一") }),
+        expect.objectContaining({ segmentId: "segment-2", speaker: "来宾", text: expect.stringContaining("新的分歧二") }),
         expect.objectContaining({ segmentId: "segment-2", text: expect.stringContaining("新的追问") }),
         expect.objectContaining({ segmentId: "segment-2", text: expect.stringContaining("新的澄清") }),
       ],

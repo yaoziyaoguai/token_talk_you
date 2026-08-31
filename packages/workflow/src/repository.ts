@@ -103,6 +103,7 @@ function migrateLegacyLongFormSnapshot(value: unknown): unknown {
     const run = asRecord(runValue);
     migrateResearchFeedbackContract(run);
     migrateReleaseEditorialContract(run);
+    migrateScriptAuditGateContract(run);
     const intent = asRecord(run.productionIntent);
     const targetMinutes = numeric(intent.targetMinutes);
     if (targetMinutes === undefined || targetMinutes >= 15) continue;
@@ -153,6 +154,7 @@ function migrateReleaseEditorialContract(run: Record<string, unknown>): void {
   }
 
   const nodes = Array.isArray(run.nodes) ? run.nodes.map(asRecord) : [];
+  const scriptAudit = nodes.find((node) => node.id === "script-audit");
   const scriptRepair = nodes.find((node) => node.id === "script-repair");
   if (!nodes.some((node) => node.id === "release-editorial")) {
     const inputArtifactIds = ["artifact-script", "artifact-blueprint", "artifact-sources"];
@@ -162,14 +164,14 @@ function migrateReleaseEditorialContract(run: Record<string, unknown>): void {
       phase: "production",
       role: "发行编辑",
       capability: "release.copy",
-      status: scriptRepair?.status === "succeeded" ? "ready" : "pending",
+      status: scriptAudit?.status === "succeeded" && scriptRepair?.status === "succeeded" ? "ready" : "pending",
       inputArtifactIds,
       inputVersionIds: inputArtifactIds.flatMap((artifactId) => {
         const artifact = artifacts.find((candidate) => candidate.id === artifactId);
         return typeof artifact?.activeVersionId === "string" ? [artifact.activeVersionId] : [];
       }),
       outputArtifactIds: ["artifact-release-copy"],
-      prerequisiteNodeIds: ["script-repair"],
+      prerequisiteNodeIds: ["script-audit", "script-repair"],
       estimatedCostCny: 0,
     };
     const insertion = nodes.findIndex((node) => node.id === "script-repair");
@@ -195,6 +197,33 @@ function migrateReleaseEditorialContract(run: Record<string, unknown>): void {
     publish.staleReason = "发行文案工作流已升级，需要补齐标题、摘要与 Show Notes";
     run.status = "active";
   }
+}
+
+function migrateScriptAuditGateContract(run: Record<string, unknown>): void {
+  const publicationRecords = Array.isArray(run.publicationRecords) ? run.publicationRecords.map(asRecord) : [];
+  if (run.status === "completed" || publicationRecords.some((record) => record.status === "published")) return;
+  const nodes = Array.isArray(run.nodes) ? run.nodes.map(asRecord) : [];
+  const auditArtifact = (Array.isArray(run.artifacts) ? run.artifacts : [])
+    .map(asRecord).find((artifact) => artifact.id === "artifact-script-audit");
+  const activeAuditVersion = (Array.isArray(auditArtifact?.versions) ? auditArtifact.versions : [])
+    .map(asRecord).find((version) => version.id === auditArtifact?.activeVersionId);
+  const latestAuditPassed = asRecord(activeAuditVersion?.data).verdict === "pass";
+  let invalidatedDownstream = false;
+
+  for (const nodeId of ["release-editorial", "visual-pack", "voice-casting", "music-cue-sheet"]) {
+    const node = nodes.find((candidate) => candidate.id === nodeId);
+    if (!node) continue;
+    const prerequisites = Array.isArray(node.prerequisiteNodeIds)
+      ? node.prerequisiteNodeIds.filter((value): value is string => typeof value === "string")
+      : [];
+    node.prerequisiteNodeIds = ["script-audit", "script-repair", ...prerequisites.filter((id) => id !== "script-audit" && id !== "script-repair")];
+    if (node.status === "succeeded" && !latestAuditPassed) {
+      node.status = "stale";
+      node.staleReason = "脚本返修后的独立审校尚未通过";
+      invalidatedDownstream = true;
+    }
+  }
+  if (invalidatedDownstream) run.status = "active";
 }
 
 function migrateResearchFeedbackContract(run: Record<string, unknown>): void {
