@@ -12,7 +12,7 @@ import {
 } from "../src/server/research-gateway.js";
 import { ResearchNodeExecutor } from "../src/server/research-node-executor.js";
 import { reviewResearchPacket, sanitizeResearchPacketRevision, setResearchSourceVerification } from "../src/server/research-ledger.js";
-import { StaticSourceVerifier, isPublicAddress } from "../src/server/source-verifier.js";
+import { StaticSourceVerifier, isPublicAddress, selectPublicAddress } from "../src/server/source-verifier.js";
 
 const NOW = "2026-08-29T00:00:00.000Z";
 const WIKIMEDIA_USER_AGENT = "TokenTalkTests/0.1 (test@example.com)";
@@ -773,6 +773,10 @@ describe("source verifier network boundary", () => {
     expect(isPublicAddress("2002:7f00:1::1")).toBe(false);
     expect(isPublicAddress("8.8.8.8")).toBe(true);
     expect(isPublicAddress("2606:4700:4700::1111")).toBe(true);
+    expect(selectPublicAddress([
+      { address: "2606:4700:4700::1111", family: 6 },
+      { address: "8.8.8.8", family: 4 },
+    ])).toEqual({ address: "8.8.8.8", family: 4 });
   });
 });
 

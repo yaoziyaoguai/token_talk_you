@@ -84,9 +84,14 @@ async function readPublicHttpsMetadata(
   const url = new URL(canonical);
   if (url.username || url.password || !url.hostname) throw new Error("来源 URL 不能包含账号信息");
   const addresses = await lookup(url.hostname, { all: true, verbatim: true });
-  const target = addresses.find((address) => isPublicAddress(address.address));
+  const target = selectPublicAddress(addresses);
   if (!target) throw new Error("来源域名没有可访问的公网地址");
   return await requestPinnedHttps(url, target.address, target.family, parentSignal, timeoutMs, userAgent);
+}
+
+export function selectPublicAddress(addresses: Array<{ address: string; family: number }>): { address: string; family: number } | undefined {
+  const publicAddresses = addresses.filter((candidate) => isPublicAddress(candidate.address));
+  return publicAddresses.find((candidate) => candidate.family === 4) ?? publicAddresses[0];
 }
 
 function requestPinnedHttps(
@@ -109,19 +114,17 @@ function requestPinnedHttps(
     const abort = () => request.destroy(parentSignal?.reason instanceof Error ? parentSignal.reason : new Error("来源核验已取消"));
     const request = httpsRequest({
       protocol: "https:",
-      hostname: url.hostname,
+      hostname: address,
+      family,
+      servername: url.hostname,
       port: url.port ? Number(url.port) : 443,
       path: `${url.pathname}${url.search}`,
       method: "GET",
       headers: {
         accept: "text/html,application/xhtml+xml,text/plain;q=0.8",
+        host: url.host,
         "user-agent": userAgent,
       },
-      lookup: ((_hostname: string, options: unknown, callback: (...args: unknown[]) => void) => {
-        const all = Boolean(options && typeof options === "object" && "all" in options && options.all === true);
-        if (all) callback(null, [{ address, family }]);
-        else callback(null, address, family);
-      }) as never,
     }, (response) => {
       const statusCode = response.statusCode ?? 0;
       const contentType = response.headers["content-type"]?.toLowerCase() ?? "";
@@ -163,6 +166,7 @@ function requestPinnedHttps(
     const timeout = setTimeout(() => request.destroy(new Error(`来源核验超过 ${timeoutMs}ms`)), timeoutMs);
     timeout.unref();
     request.once("error", (error) => finish(() => reject(error)));
+    request.once("socket", (socket) => socket.once("error", (error) => finish(() => reject(error))));
     if (parentSignal?.aborted) abort();
     else parentSignal?.addEventListener("abort", abort, { once: true });
     request.end();
