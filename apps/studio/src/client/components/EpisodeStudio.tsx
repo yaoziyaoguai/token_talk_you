@@ -1,6 +1,6 @@
 import type { WorkflowNode } from "@token-talk/domain/model";
-import type { AgentLoopResult, ExecuteNodeInput, NodeExecutionPreview, RegisterCoverMetadata, RegisterPublicationInput, RegisterReleaseMasterMetadata, StudioBootstrap, WorkflowRun } from "../../shared/api.js";
-import { AlertTriangle, Check, Circle, CircleDot, LoaderCircle, Play } from "lucide-react";
+import type { AgentLoopJob, AgentLoopResult, ExecuteNodeInput, NodeExecutionPreview, RegisterCoverMetadata, RegisterPublicationInput, RegisterReleaseMasterMetadata, StudioBootstrap, WorkflowRun } from "../../shared/api.js";
+import { AlertTriangle, Check, Circle, CircleDot, LoaderCircle, Play, Square } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { NodeWorkspace } from "./NodeWorkspace.js";
 import { SeriesArtwork } from "./SeriesArtwork.js";
@@ -15,6 +15,7 @@ interface EpisodeStudioProps {
   onReviewResearchSource: (artifactId: string, sourceId: string, verified: boolean) => Promise<void>;
   onExecuteNode: (nodeId: string, input?: ExecuteNodeInput) => Promise<void>;
   onContinueAgentLoop?: (() => Promise<AgentLoopResult>) | undefined;
+  onCancelAgentLoop?: (() => Promise<void>) | undefined;
   onLoadExecutionPreview: (nodeId: string) => Promise<NodeExecutionPreview>;
   onAuthorizeSpend: (nodeId: string, maxCostCny: number) => Promise<void>;
   onReconcileCost: (receiptId: string, actualCostCny: number, note: string, providerInvoiceId?: string) => Promise<void>;
@@ -44,11 +45,18 @@ const runStatus = {
   failed: { label: "需要处理", tone: "failed" },
 } as const;
 
-export function EpisodeStudio({ data, run, selectedNodeId: controlledSelectedNodeId, onSelectNode, onReviseArtifact, onReviewResearchSource, onExecuteNode, onContinueAgentLoop, onLoadExecutionPreview, onAuthorizeSpend, onReconcileCost, onRegisterReleaseMaster, onRegisterCover, onSelectCover, onRegisterPublication, onDirtyChange }: EpisodeStudioProps) {
+export function EpisodeStudio({ data, run, selectedNodeId: controlledSelectedNodeId, onSelectNode, onReviseArtifact, onReviewResearchSource, onExecuteNode, onContinueAgentLoop, onCancelAgentLoop, onLoadExecutionPreview, onAuthorizeSpend, onReconcileCost, onRegisterReleaseMaster, onRegisterCover, onSelectCover, onRegisterPublication, onDirtyChange }: EpisodeStudioProps) {
   const [localSelectedNodeId, setLocalSelectedNodeId] = useState(() => recommendedNode(run)?.id);
   const [workspaceDirty, setWorkspaceDirty] = useState(false);
   const [agentLoopState, setAgentLoopState] = useState<"idle" | "running">("idle");
   const [agentLoopMessage, setAgentLoopMessage] = useState<string>();
+  const latestAgentLoopJob = [...data.agentLoopJobs].reverse().find((job) => job.runId === run.id);
+  const activeAgentLoopJob = [...data.agentLoopJobs].reverse().find((job) =>
+    job.runId === run.id && ["queued", "running", "cancel_requested"].includes(job.status));
+  const agentLoopRunning = agentLoopState === "running" || Boolean(activeAgentLoopJob);
+  const visibleAgentLoopMessage = agentLoopMessage ?? (activeAgentLoopJob
+    ? activeAgentLoopMessage(activeAgentLoopJob, run)
+    : terminalAgentLoopMessage(latestAgentLoopJob));
   const selectedNodeId = controlledSelectedNodeId ?? localSelectedNodeId;
   const selectedNode = run.nodes.find((node) => node.id === selectedNodeId) ?? recommendedNode(run) ?? run.nodes[0];
   const workflowComplete = run.nodes.length > 0 && run.nodes.every((node) => node.status === "succeeded");
@@ -102,6 +110,7 @@ export function EpisodeStudio({ data, run, selectedNodeId: controlledSelectedNod
     }
     try {
       setAgentLoopState("running");
+      setAgentLoopMessage(undefined);
       const result = await onContinueAgentLoop();
       const labels: Record<AgentLoopResult["reason"], string> = {
         continue_available_work: "已完成当前步骤，继续自动制作。",
@@ -110,12 +119,23 @@ export function EpisodeStudio({ data, run, selectedNodeId: controlledSelectedNod
         requires_input: "自动流程已生成需要处理的产物。",
         failed: "自动流程在异常节点停止，请查看该节点的执行记录。",
         repair_limit: "自动返修达到本轮上限，请查看审计结果。",
+        cancelled: "云端自动制作已停止，已完成的节点和回执均已保留。",
       };
       setAgentLoopMessage(labels[result.reason]);
     } catch (reason) {
       setAgentLoopMessage(reason instanceof Error ? reason.message : "继续自动制作失败，请重试。");
     } finally {
       setAgentLoopState("idle");
+    }
+  }
+
+  async function cancelProduction() {
+    if (!onCancelAgentLoop) return;
+    try {
+      setAgentLoopMessage(undefined);
+      await onCancelAgentLoop();
+    } catch (reason) {
+      setAgentLoopMessage(reason instanceof Error ? reason.message : "无法停止云端自动制作。");
     }
   }
 
@@ -128,9 +148,10 @@ export function EpisodeStudio({ data, run, selectedNodeId: controlledSelectedNod
         </div>
         <div className="episode-run-summary">
           <span className={`status-badge ${status.tone}`}>{status.label}</span>
-          <button className="primary-command episode-continue-command" type="button" disabled={!onContinueAgentLoop || agentLoopState === "running" || workflowComplete || run.status === "completed"} onClick={() => void continueProduction()}>{agentLoopState === "running" ? <LoaderCircle className="is-spinning" size={15} /> : <Play size={15} />}{agentLoopState === "running" ? "制作中" : workflowComplete ? "制作完成" : "继续制作"}</button>
+          <button className="primary-command episode-continue-command" type="button" disabled={!onContinueAgentLoop || agentLoopRunning || workflowComplete || run.status === "completed"} onClick={() => void continueProduction()}>{agentLoopRunning ? <LoaderCircle className="is-spinning" size={15} /> : <Play size={15} />}{agentLoopRunning ? "制作中" : workflowComplete ? "制作完成" : "继续制作"}</button>
+          {activeAgentLoopJob ? <button className="secondary-command" type="button" disabled={!onCancelAgentLoop || activeAgentLoopJob.status === "cancel_requested"} onClick={() => void cancelProduction()}><Square size={14} />{activeAgentLoopJob.status === "cancel_requested" ? "停止中" : "停止"}</button> : null}
           <dl><div><dt>进度</dt><dd>{progress}%</dd></div><div><dt>已完成</dt><dd>{completedNodes}/{run.nodes.length}</dd></div><div><dt>费用占用</dt><dd>{costPending ? "待对账 · " : ""}¥{spent.toFixed(2)}</dd></div></dl>
-          {agentLoopMessage ? <small className="agent-loop-message" role="status">{agentLoopMessage}</small> : null}
+          {visibleAgentLoopMessage ? <small className="agent-loop-message" role="status">{visibleAgentLoopMessage}</small> : null}
         </div>
       </header>
 
@@ -182,6 +203,36 @@ export function EpisodeStudio({ data, run, selectedNodeId: controlledSelectedNod
       </section>
     </div>
   );
+}
+
+function terminalAgentLoopMessage(job: AgentLoopJob | undefined): string | undefined {
+  if (!job || ["queued", "running", "cancel_requested"].includes(job.status)) return undefined;
+  if (job.status === "cancelled") return "云端自动制作已停止，已完成的节点和回执均已保留。";
+  if (job.status === "completed") {
+    return job.executedNodeIds.length ? `上一轮自动制作已完成 ${job.executedNodeIds.length} 个步骤。` : "当前没有可继续的自动步骤。";
+  }
+  if (job.status === "failed") return job.errorMessage ? `自动流程异常停止：${job.errorMessage}` : "自动流程在异常节点停止，请查看执行记录。";
+  const reasons: Partial<Record<NonNullable<AgentLoopJob["reason"]>, string>> = {
+    awaiting_spend_authorization: "已停在付费声音生成前，等待成本授权。",
+    requires_input: "自动流程已生成需要处理的产物。",
+    repair_limit: "自动返修达到本轮上限，请查看审计结果。",
+    interrupted_execution: "服务重启打断了节点执行，结果或费用需要核对后再继续。",
+    failed: job.errorMessage ? `自动流程异常停止：${job.errorMessage}` : "自动流程在异常节点停止，请查看执行记录。",
+  };
+  return job.reason ? reasons[job.reason] ?? job.errorMessage : job.errorMessage;
+}
+
+function activeAgentLoopMessage(job: AgentLoopJob, run: WorkflowRun): string {
+  const node = job.currentNodeId ? run.nodes.find((candidate) => candidate.id === job.currentNodeId) : undefined;
+  if (job.status === "cancel_requested") {
+    return node
+      ? `正在等待“${node.label}”安全收尾，随后停止云端自动制作。`
+      : "正在等待当前节点安全收尾，随后停止云端自动制作。";
+  }
+  if (job.status === "queued") return "云端自动制作已排队，关闭或刷新页面不会中断。";
+  return node
+    ? `云端自动制作正在执行“${node.label}”，关闭或刷新页面不会中断。`
+    : "云端自动制作正在判断下一步，关闭或刷新页面不会中断。";
 }
 
 export function recommendedNode(run: WorkflowRun): WorkflowNode | undefined {

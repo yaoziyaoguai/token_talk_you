@@ -81,6 +81,7 @@ describe("Studio API", () => {
     const response = await app.inject({ method: "GET", url: "/api/bootstrap" });
 
     expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json().providers.find((provider: { id: string }) => provider.id === "local-ollama-production").availability).toEqual({
       status: "configured",
       reason: "运行时已配置，尚未完成连通性验证",
@@ -1828,6 +1829,265 @@ describe("Studio API", () => {
     expect(execute.mock.calls.some(([context]) => context.node.id === "audio-mix")).toBe(false);
     expect((result?.run as typeof run).nodes.find((node) => node.id === "audio-mix")?.status).toBe("ready");
     await app.close();
+  });
+
+  it("owns an idempotent Agent Loop job after the initiating browser request returns", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-server-owned-job");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-server-owned-job",
+      opportunityId: "opportunity-server-owned-job",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes[0]!.status = "ready";
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+
+    let resolveExecution: ((outcome: NodeExecutionOutcome) => void) | undefined;
+    const execute = vi.fn(({ node }: NodeExecutionContext) => new Promise<NodeExecutionOutcome>((resolve) => {
+      resolveExecution = resolve;
+      expect(node.id).toBe("episode-opportunity");
+    }));
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+    const headers = { "idempotency-key": "agent-loop-job-request-000001" };
+
+    const started = await app.inject({ method: "POST", url: `/api/runs/${run.id}/agent-loop-jobs`, headers });
+    expect(started.statusCode).toBe(202);
+    const job = started.json();
+    expect(job).toMatchObject({ runId: run.id, idempotencyKey: headers["idempotency-key"] });
+
+    const replayed = await app.inject({ method: "POST", url: `/api/runs/${run.id}/agent-loop-jobs`, headers });
+    expect(replayed.statusCode).toBe(202);
+    expect(replayed.json().id).toBe(job.id);
+    const reusedForAnotherRun = await app.inject({ method: "POST", url: "/api/runs/run-deep-reading/agent-loop-jobs", headers });
+    expect(reusedForAnotherRun.statusCode).toBe(409);
+    const competing = await app.inject({
+      method: "POST",
+      url: `/api/runs/${run.id}/agent-loop-jobs`,
+      headers: { "idempotency-key": "agent-loop-job-request-000002" },
+    });
+    expect(competing.statusCode).toBe(409);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    const observed = await app.inject({ method: "GET", url: `/api/runs/${run.id}/agent-loop-jobs/${job.id}` });
+    expect(observed.statusCode).toBe(200);
+    expect(observed.headers["cache-control"]).toBe("no-store");
+    expect(observed.json()).toMatchObject({ id: job.id, status: "running", currentNodeId: run.nodes[0]!.id });
+
+    const cancelling = await app.inject({ method: "POST", url: `/api/runs/${run.id}/agent-loop-jobs/${job.id}/cancel` });
+    expect(cancelling.statusCode).toBe(202);
+    expect(cancelling.json().status).toBe("cancel_requested");
+
+    const firstNode = run.nodes[0]!;
+    resolveExecution?.({
+      status: "succeeded",
+      providerId: "test-server-owned-job",
+      modelId: firstNode.capability,
+      billing: "local_compute",
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      outputs: { [firstNode.outputArtifactIds[0]!]: { generatedBy: firstNode.id } },
+    });
+
+    await vi.waitFor(async () => {
+      const completed = await app.inject({ method: "GET", url: `/api/runs/${run.id}/agent-loop-jobs/latest` });
+      expect(completed.headers["cache-control"]).toBe("no-store");
+      expect(completed.json()).toMatchObject({ id: job.id, status: "cancelled", executedNodeIds: [firstNode.id] });
+      expect(completed.json()).not.toHaveProperty("currentNodeId");
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("blocks a cancelling Agent Loop job whose node was interrupted by a service restart", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-server-owned-restart");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-server-owned-restart",
+      opportunityId: "opportunity-server-owned-restart",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes[0]!.status = "ready";
+    const interrupted = beginNodeExecution(run, run.nodes[0]!.id, {
+      providerId: "test-restart",
+      modelId: "test-restart-v1",
+      billing: "local_compute",
+      estimatedCostCny: 0,
+      startedAt: NOW,
+    });
+    snapshot.runs.unshift(interrupted);
+    snapshot.agentLoopJobs.push({
+      id: "agent-loop-job-restart-queued-001",
+      runId: interrupted.id,
+      idempotencyKey: "agent-loop-job-restart-queued-key-001",
+      status: "queued",
+      createdAt: NOW,
+      updatedAt: NOW,
+      executedNodeIds: [],
+    });
+    snapshot.agentLoopJobs.push({
+      id: "agent-loop-job-restart-001",
+      runId: interrupted.id,
+      idempotencyKey: "agent-loop-job-restart-key-001",
+      status: "cancel_requested",
+      createdAt: NOW,
+      updatedAt: NOW,
+      executedNodeIds: [],
+      cancelRequestedAt: NOW,
+    });
+    await repository.save(snapshot);
+
+    const execute = vi.fn();
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+    const observed = await app.inject({ method: "GET", url: `/api/runs/${interrupted.id}/agent-loop-jobs/latest` });
+    expect(observed.statusCode).toBe(200);
+    expect(observed.json()).toMatchObject({
+      id: "agent-loop-job-restart-001",
+      status: "blocked",
+      reason: "interrupted_execution",
+      stoppedAtNodeId: interrupted.nodes[0]!.id,
+    });
+    const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    expect(bootstrap.json().runs.find((item: { id: string }) => item.id === interrupted.id).nodes[0].status).toBe("needs_human");
+    expect(bootstrap.json().agentLoopJobs.find((item: { id: string }) => item.id === "agent-loop-job-restart-queued-001")).toMatchObject({
+      status: "blocked",
+      reason: "interrupted_execution",
+      stoppedAtNodeId: interrupted.nodes[0]!.id,
+    });
+    expect(execute).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("runs Agent Loop jobs from different episodes through one Studio queue", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const template = snapshot.series[0];
+    if (!template) throw new Error("seed series missing");
+    const runs = ["first", "second"].map((suffix) => {
+      const candidate = agentLoopCandidate(`candidate-serialized-${suffix}`);
+      const run = createRunFromCandidate(candidate, {
+        id: `run-serialized-${suffix}`,
+        opportunityId: `opportunity-serialized-${suffix}`,
+        seriesId: template.id,
+        recipeId: "rapid-topic-v1",
+        productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+        now: NOW,
+      });
+      run.nodes.forEach((node) => { node.status = "pending"; });
+      run.nodes[0]!.status = "ready";
+      return run;
+    });
+    snapshot.runs.unshift(...runs);
+    await repository.save(snapshot);
+
+    const completions: Array<(outcome: NodeExecutionOutcome) => void> = [];
+    const execute = vi.fn(() => new Promise<NodeExecutionOutcome>((resolve) => completions.push(resolve)));
+    const app = await createStudioServer({ workspaceRoot: root, now: () => NOW, nodeExecutor: { execute } });
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/runs/${runs[0]!.id}/agent-loop-jobs`,
+      headers: { "idempotency-key": "serialized-agent-loop-key-0001" },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: `/api/runs/${runs[1]!.id}/agent-loop-jobs`,
+      headers: { "idempotency-key": "serialized-agent-loop-key-0002" },
+    });
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    expect((await app.inject({ method: "GET", url: `/api/runs/${runs[1]!.id}/agent-loop-jobs/latest` })).json().status).toBe("queued");
+
+    completions[0]?.({
+      status: "needs_human",
+      providerId: "serialized-agent-loop",
+      modelId: "serialized-v1",
+      billing: "local_compute",
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      errorMessage: "test stop",
+    });
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    completions[1]?.({
+      status: "needs_human",
+      providerId: "serialized-agent-loop",
+      modelId: "serialized-v1",
+      billing: "local_compute",
+      estimatedCostCny: 0,
+      actualCostCny: 0,
+      startedAt: NOW,
+      finishedAt: NOW,
+      errorMessage: "test stop",
+    });
+    await vi.waitFor(async () => {
+      const job = await app.inject({ method: "GET", url: `/api/runs/${runs[1]!.id}/agent-loop-jobs/latest` });
+      expect(job.json().status).toBe("blocked");
+    });
+    await app.close();
+  });
+
+  it("rechecks Agent Loop cancellation inside the node claim lock", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-cancel-before-claim");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-cancel-before-claim",
+      opportunityId: "opportunity-cancel-before-claim",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes[0]!.status = "ready";
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const execute = vi.fn();
+    const service = await StudioService.create(root, () => NOW, undefined, null, { execute });
+
+    const latest = await repository.load();
+    latest.agentLoopJobs.push({
+      id: "agent-loop-job-cancel-before-claim",
+      runId: run.id,
+      idempotencyKey: "agent-loop-cancel-before-claim-key",
+      status: "cancel_requested",
+      createdAt: NOW,
+      updatedAt: NOW,
+      executedNodeIds: [],
+      cancelRequestedAt: NOW,
+    });
+    await repository.save(latest);
+
+    await expect(service.continueAgentLoop(run.id, undefined, 1, "agent-loop-job-cancel-before-claim")).rejects.toThrow();
+    expect(execute).not.toHaveBeenCalled();
+    await service.close();
+  });
+
+  it("does not execute a legacy Agent Loop request cancelled while waiting for the Studio queue", async () => {
+    const execute = vi.fn();
+    const service = await StudioService.create(root, () => NOW, undefined, null, { execute });
+    const revisionBefore = (await service.bootstrap()).revision;
+    const controller = new AbortController();
+    controller.abort(new Error("request disconnected while queued"));
+
+    await expect(service.continueAgentLoop("run-deep-reading", controller.signal, 1)).rejects.toThrow("request disconnected while queued");
+    expect(execute).not.toHaveBeenCalled();
+    expect((await service.bootstrap()).revision).toBe(revisionBefore);
+    await service.close();
   });
 
   it("previews and grants an exact input-scoped spend authorization before execution", async () => {

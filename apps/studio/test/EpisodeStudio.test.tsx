@@ -1,5 +1,5 @@
 import { createSeedSnapshot } from "@token-talk/domain";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EpisodeStudio } from "../src/client/components/EpisodeStudio.js";
 
@@ -97,5 +97,56 @@ describe("EpisodeStudio", () => {
     confirm.mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: /资料包/ }));
     expect(screen.getByRole("heading", { name: "资料包" })).toBeInTheDocument();
+  });
+
+  it("shows and can stop a server-owned Agent Loop job after a page reload", async () => {
+    const data = createSeedSnapshot(NOW);
+    const run = data.runs[0];
+    if (!run) throw new Error("seed run missing");
+    data.agentLoopJobs.push({
+      id: "agent-loop-job-visible-001",
+      runId: run.id,
+      idempotencyKey: "agent-loop-visible-key-001",
+      status: "running",
+      createdAt: NOW,
+      updatedAt: NOW,
+      executedNodeIds: ["source-packet"],
+      currentNodeId: "evidence-audit",
+    });
+    const onCancelAgentLoop = vi.fn(async () => undefined);
+
+    const view = render(<EpisodeStudio {...props(data, run)} onCancelAgentLoop={onCancelAgentLoop} />);
+
+    expect(screen.getByRole("button", { name: "制作中" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("证据审计");
+    expect(screen.getByRole("status")).toHaveTextContent("关闭或刷新页面不会中断");
+    fireEvent.click(screen.getByRole("button", { name: "停止" }));
+    await waitFor(() => expect(onCancelAgentLoop).toHaveBeenCalledOnce());
+
+    data.agentLoopJobs[0] = { ...data.agentLoopJobs[0]!, status: "cancelled", updatedAt: "2026-08-28T00:01:00.000Z" };
+    view.rerender(<EpisodeStudio {...props(data, run)} onCancelAgentLoop={onCancelAgentLoop} />);
+    expect(screen.queryByText(/正在等待当前节点安全收尾/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("云端自动制作已停止");
+  });
+
+  it("restores a persisted Agent Loop blocker after a page reload", () => {
+    const data = createSeedSnapshot(NOW);
+    const run = data.runs[0];
+    if (!run) throw new Error("seed run missing");
+    data.agentLoopJobs.push({
+      id: "agent-loop-job-blocked-001",
+      runId: run.id,
+      idempotencyKey: "agent-loop-blocked-key-001",
+      status: "blocked",
+      createdAt: NOW,
+      updatedAt: NOW,
+      executedNodeIds: ["source-packet"],
+      stoppedAtNodeId: "audio-render",
+      reason: "awaiting_spend_authorization",
+    });
+
+    render(<EpisodeStudio {...props(data, run)} />);
+
+    expect(screen.getByRole("status")).toHaveTextContent("等待成本授权");
   });
 });

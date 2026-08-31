@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 import {
   AdoptCandidateInputSchema,
   AddMusicAssetMetadataSchema,
+  AgentLoopIdempotencyKeySchema,
   AuthorizeNodeSpendInputSchema,
   CreateCustomOpportunityInputSchema,
   CreateSeriesInputSchema,
@@ -195,9 +196,9 @@ export async function createStudioServer(
 
   app.get("/api/health", async () => ({ status: "ok" }));
 
-  app.get("/api/bootstrap", async () => {
+  app.get("/api/bootstrap", async (_request, reply) => {
     const snapshot = await service.bootstrap();
-    return {
+    return reply.header("cache-control", "no-store").send({
       ...snapshot,
       providers: snapshot.providers.map((provider) => {
         if (provider.id === "local-ollama-production") {
@@ -209,7 +210,7 @@ export async function createStudioServer(
         return provider;
       }),
       mutationToken,
-    };
+    });
   });
 
   app.get<{ Params: { runId: string } }>("/api/runs/:runId/release-package", async (request, reply) => {
@@ -326,6 +327,37 @@ export async function createStudioServer(
       } finally {
         reply.raw.off("close", disconnect);
       }
+    },
+  );
+
+  app.post<{ Params: { runId: string }; Headers: { "idempotency-key"?: string } }>(
+    "/api/runs/:runId/agent-loop-jobs",
+    async (request, reply) => {
+      const idempotencyKey = AgentLoopIdempotencyKeySchema.parse(request.headers["idempotency-key"]);
+      const job = await service.startAgentLoopJob(request.params.runId, idempotencyKey);
+      return reply.status(202).send(job);
+    },
+  );
+
+  app.get<{ Params: { runId: string } }>(
+    "/api/runs/:runId/agent-loop-jobs/latest",
+    async (request, reply) => reply
+      .header("cache-control", "no-store")
+      .send(await service.latestAgentLoopJob(request.params.runId)),
+  );
+
+  app.get<{ Params: { runId: string; jobId: string } }>(
+    "/api/runs/:runId/agent-loop-jobs/:jobId",
+    async (request, reply) => reply
+      .header("cache-control", "no-store")
+      .send(await service.agentLoopJob(request.params.runId, request.params.jobId)),
+  );
+
+  app.post<{ Params: { runId: string; jobId: string } }>(
+    "/api/runs/:runId/agent-loop-jobs/:jobId/cancel",
+    async (request, reply) => {
+      const job = await service.cancelAgentLoopJob(request.params.runId, request.params.jobId);
+      return reply.status(202).send(job);
     },
   );
 

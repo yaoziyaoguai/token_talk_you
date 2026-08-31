@@ -147,7 +147,10 @@ export class CodexBrokerServer {
       expiresAt: Date.now() + this.options.idempotencyTtlMs,
     };
     this.idempotency.set(request.requestId, record);
-    void result.finally(() => { record.item.state = "settled"; }).catch(() => undefined);
+    void result.finally(() => {
+      record.item.state = "settled";
+      record.expiresAt = Date.now() + this.options.idempotencyTtlMs;
+    }).catch(() => undefined);
     return this.subscribe(record);
   }
 

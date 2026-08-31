@@ -1,5 +1,5 @@
 import type { EpisodeCandidate } from "@token-talk/domain";
-import type { CandidateInbox, StudioBootstrap } from "../shared/api.js";
+import type { AgentLoopJob, CandidateInbox, StudioBootstrap } from "../shared/api.js";
 import {
   AudioLines,
   ListMusic,
@@ -7,7 +7,7 @@ import {
   Radio,
   Settings2,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
 import { StudioApi } from "./api.js";
 import { EpisodeStudio, recommendedNode } from "./components/EpisodeStudio.js";
 import { EpisodeStartDialog } from "./components/EpisodeStartDialog.js";
@@ -36,6 +36,7 @@ const CANDIDATE_WARMUP_SYNC_LIMIT = 20;
 export function App({ initialData, initialInbox }: AppProps) {
   const [view, setView] = useState<ViewId>(() => readLocationState().view);
   const [data, setData] = useState<StudioBootstrap | undefined>(initialData);
+  const dataRef = useRef<StudioBootstrap | undefined>(initialData);
   const [inbox, setInbox] = useState<CandidateInbox | undefined>(initialInbox);
   const [bootError, setBootError] = useState<string>();
   const [bootAttempt, setBootAttempt] = useState(0);
@@ -47,34 +48,92 @@ export function App({ initialData, initialInbox }: AppProps) {
     const requested = readLocationState().runId;
     return initialData?.runs.some((run) => run.id === requested) ? requested : initialData?.runs[0]?.id;
   });
-  const [selectedNodeId, setSelectedNodeId] = useState(() => readLocationState().nodeId);
+  const [selectedNodeId, setSelectedNodeId] = useState(() => {
+    const location = readLocationState();
+    const runId = initialData?.runs.some((run) => run.id === location.runId) ? location.runId : initialData?.runs[0]?.id;
+    return restoredAgentLoopNodeId(initialData, runId, location.nodeId);
+  });
   const [focusedCandidateId, setFocusedCandidateId] = useState<string>();
   const [focusedSeriesId, setFocusedSeriesId] = useState(() => readLocationState().seriesId);
   const [selectedOpportunityId, setSelectedOpportunityId] = useState<string>();
   const [startPending, setStartPending] = useState(false);
   const [startError, setStartError] = useState<string>();
   const [productionDirty, setProductionDirty] = useState(false);
+  const [agentLoopRefreshPending, setAgentLoopRefreshPending] = useState(false);
   const candidateRequestInFlight = useRef(false);
   const candidateActiveRefresh = useRef(false);
   const candidateRefreshQueued = useRef(false);
   const candidateCacheSyncQueued = useRef(false);
   const candidateWarmupAttempts = useRef(0);
+  const agentLoopStartKeys = useRef(new Map<string, string>());
+  const dataEpoch = useRef(0);
+  const productionDirtyRef = useRef(productionDirty);
+  const pendingAgentLoopTarget = useRef<{ runId: string; nodeId?: string } | undefined>(undefined);
+  const commitData = useCallback((next: SetStateAction<StudioBootstrap | undefined>) => {
+    const current = dataRef.current;
+    const resolved = typeof next === "function"
+      ? (next as (value: StudioBootstrap | undefined) => StudioBootstrap | undefined)(current)
+      : next;
+    if (Object.is(current, resolved)) return;
+    dataRef.current = resolved;
+    dataEpoch.current += 1;
+    setData(resolved);
+  }, []);
+  const updateProductionDirty = useCallback((dirty: boolean) => {
+    productionDirtyRef.current = dirty;
+    setProductionDirty(dirty);
+  }, []);
+  const activeAgentLoopJobSignature = data?.agentLoopJobs
+    .filter((job) => ["queued", "running", "cancel_requested"].includes(job.status))
+    .map((job) => `${job.id}:${job.status}`)
+    .join(",") ?? "";
 
   useEffect(() => {
     StudioApi.configureLocalSession(data?.mutationToken);
   }, [data?.mutationToken]);
 
   useEffect(() => {
+    if (productionDirty || !agentLoopRefreshPending) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      const requestedAtEpoch = dataEpoch.current;
+      try {
+        const bootstrap = await StudioApi.loadBootstrap();
+        if (cancelled || productionDirtyRef.current) return;
+        if (requestedAtEpoch !== dataEpoch.current) {
+          timer = window.setTimeout(() => void refresh(), 2_000);
+          return;
+        }
+        commitData(bootstrap);
+        const target = pendingAgentLoopTarget.current;
+        if (target && target.runId === selectedRunId && target.nodeId) setSelectedNodeId(target.nodeId);
+        pendingAgentLoopTarget.current = undefined;
+        setAgentLoopRefreshPending(false);
+      } catch {
+        if (!cancelled) timer = window.setTimeout(() => void refresh(), 2_000);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [agentLoopRefreshPending, commitData, productionDirty, selectedRunId]);
+
+  useEffect(() => {
     if (initialData) return;
     setBootError(undefined);
     StudioApi.loadBootstrap().then((value) => {
-      setData(value);
-      const requested = readLocationState().runId;
-      setSelectedRunId(value.runs.some((run) => run.id === requested) ? requested : value.runs[0]?.id);
+      commitData(value);
+      const location = readLocationState();
+      const runId = value.runs.some((run) => run.id === location.runId) ? location.runId : value.runs[0]?.id;
+      setSelectedRunId(runId);
+      setSelectedNodeId(restoredAgentLoopNodeId(value, runId, location.nodeId));
     }).catch((reason: unknown) => {
       setBootError(reason instanceof Error ? reason.message : "无法载入 Studio 数据");
     });
-  }, [bootAttempt, initialData]);
+  }, [bootAttempt, commitData, initialData]);
 
   useEffect(() => {
     const restoreLocation = () => {
@@ -90,12 +149,12 @@ export function App({ initialData, initialInbox }: AppProps) {
       const location = readLocationState();
       setView(location.view);
       setSelectedRunId(location.runId);
-      setSelectedNodeId(location.nodeId);
+      setSelectedNodeId(restoredAgentLoopNodeId(data, location.runId, location.nodeId));
       setFocusedSeriesId(location.seriesId);
     };
     window.addEventListener("popstate", restoreLocation);
     return () => window.removeEventListener("popstate", restoreLocation);
-  }, [focusedSeriesId, productionDirty, selectedNodeId, selectedRunId, view]);
+  }, [data, focusedSeriesId, productionDirty, selectedNodeId, selectedRunId, view]);
 
   const loadCandidates = useCallback(async (refresh: boolean, silent = false, cached = false, queueIfBusy = false) => {
     if (candidateRequestInFlight.current) {
@@ -185,6 +244,55 @@ export function App({ initialData, initialInbox }: AppProps) {
     return () => window.clearInterval(timer);
   }, [data?.mutationToken, inbox, loadCandidates, trendCandidateCount]);
 
+  useEffect(() => {
+    if (!activeAgentLoopJobSignature) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const syncAgentLoop = async () => {
+      const requestedAtEpoch = dataEpoch.current;
+      try {
+        const bootstrap = await StudioApi.loadBootstrap();
+        if (!cancelled && !productionDirtyRef.current && requestedAtEpoch === dataEpoch.current) {
+          const activeJobIds = new Set(dataRef.current?.agentLoopJobs
+            .filter((job) => ["queued", "running", "cancel_requested"].includes(job.status))
+            .map((job) => job.id));
+          const stoppedJob = [...bootstrap.agentLoopJobs].reverse().find((job) =>
+            activeJobIds.has(job.id)
+            && !["queued", "running", "cancel_requested"].includes(job.status)
+            && job.stoppedAtNodeId);
+          commitData(bootstrap);
+          const stoppedRunId = stoppedJob?.runId;
+          const stoppedNodeId = stoppedJob?.stoppedAtNodeId;
+          if (stoppedRunId && stoppedRunId === selectedRunId && stoppedNodeId) {
+            setSelectedNodeId(stoppedNodeId);
+            const location = readLocationState();
+            if (location.view === "production" && location.runId === stoppedRunId) {
+              writeLocationState({ view: "production", runId: stoppedRunId, nodeId: stoppedNodeId });
+            }
+          }
+        }
+      } catch {
+        // 云端作业继续执行；短暂轮询失败不应把制作流程标记为失败。
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => void syncAgentLoop(), 2_000);
+      }
+    };
+    timer = window.setTimeout(() => void syncAgentLoop(), 500);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [activeAgentLoopJobSignature, commitData, productionDirty, selectedRunId]);
+
+  useEffect(() => {
+    for (const [runId] of agentLoopStartKeys.current) {
+      const latest = [...(data?.agentLoopJobs ?? [])].reverse().find((job) => job.runId === runId);
+      if (latest && !["queued", "running", "cancel_requested"].includes(latest.status)) {
+        agentLoopStartKeys.current.delete(runId);
+      }
+    }
+  }, [data?.agentLoopJobs]);
+
   if (bootError) return <div className="boot-state error" role="alert"><strong>Studio 没有成功打开</strong><span>{bootError}</span><button className="secondary-command" type="button" onClick={() => setBootAttempt((value) => value + 1)}>重新连接</button></div>;
   if (!data) return <div className="boot-state">正在打开 Token Talk Studio…</div>;
   const selectedRun = data.runs.find((run) => run.id === selectedRunId) ?? data.runs[0];
@@ -197,7 +305,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   async function reviseRunArtifact(artifactId: string, value: unknown) {
     if (!selectedRun) return;
     const revisedRun = await StudioApi.reviseArtifact(selectedRun.id, artifactId, value);
-    setData((current) => current ? {
+    commitData((current) => current ? {
       ...current,
       updatedAt: revisedRun.updatedAt,
       runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate),
@@ -207,7 +315,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   async function executeRunNode(nodeId: string, input?: Parameters<typeof StudioApi.executeNode>[2]) {
     if (!selectedRun) return;
     const executedRun = await StudioApi.executeNode(selectedRun.id, nodeId, input);
-    setData((current) => current ? {
+    commitData((current) => current ? {
       ...current,
       updatedAt: executedRun.updatedAt,
       runs: current.runs.map((candidate) => candidate.id === executedRun.id ? executedRun : candidate),
@@ -216,20 +324,65 @@ export function App({ initialData, initialInbox }: AppProps) {
 
   async function continueRunAgentLoop() {
     if (!selectedRun) throw new Error("当前节目不可用");
-    const executedNodeIds: string[] = [];
-    for (let step = 0; step < 40; step += 1) {
-      const result = await StudioApi.continueAgentLoop(selectedRun.id);
-      executedNodeIds.push(...result.executedNodeIds);
-      setData((current) => current ? {
-        ...current,
-        updatedAt: result.run.updatedAt,
-        runs: current.runs.map((candidate) => candidate.id === result.run.id ? result.run : candidate),
-      } : current);
-      if (result.reason === "continue_available_work") continue;
-      if (result.stoppedAtNodeId) setSelectedNodeId(result.stoppedAtNodeId);
-      return { ...result, executedNodeIds };
+    const runId = selectedRun.id;
+    const idempotencyKey = agentLoopStartKeys.current.get(runId) ?? agentLoopRequestId();
+    agentLoopStartKeys.current.set(runId, idempotencyKey);
+    let job: AgentLoopJob;
+    try {
+      job = await StudioApi.startAgentLoopJob(runId, idempotencyKey);
+    } catch (startError) {
+      let latest: AgentLoopJob;
+      try {
+        latest = await StudioApi.loadLatestAgentLoopJob(runId);
+      } catch {
+        throw startError;
+      }
+      const active = ["queued", "running", "cancel_requested"].includes(latest.status);
+      if (latest.idempotencyKey !== idempotencyKey && !active) throw startError;
+      job = latest;
     }
-    throw new Error("自动制作超过单轮 40 个步骤，已停止以避免无界循环。");
+    mergeAgentLoopJob(job);
+    while (["queued", "running", "cancel_requested"].includes(job.status)) {
+      await delay(1_500);
+      try {
+        job = await StudioApi.loadAgentLoopJob(runId, job.id);
+      } catch {
+        // 作业属于服务端；短暂网络故障只能延迟观察，不能终止或重复启动它。
+        const persisted = dataRef.current?.agentLoopJobs.find((candidate) => candidate.id === job.id && candidate.runId === runId);
+        if (persisted) job = persisted;
+        continue;
+      }
+      mergeAgentLoopJob(job);
+    }
+    agentLoopStartKeys.current.delete(runId);
+    pendingAgentLoopTarget.current = { runId, ...(job.stoppedAtNodeId ? { nodeId: job.stoppedAtNodeId } : {}) };
+    setAgentLoopRefreshPending(true);
+    return {
+      run: selectedRun,
+      executedNodeIds: job.executedNodeIds,
+      ...(job.stoppedAtNodeId ? { stoppedAtNodeId: job.stoppedAtNodeId } : {}),
+      reason: job.status === "cancelled"
+        ? "cancelled" as const
+        : job.reason === "interrupted_execution"
+          ? "requires_input" as const
+          : job.reason ?? "failed" as const,
+    };
+  }
+
+  async function cancelRunAgentLoop() {
+    if (!selectedRun) return;
+    const job = [...(data?.agentLoopJobs ?? [])].reverse().find((candidate) =>
+      candidate.runId === selectedRun.id && ["queued", "running", "cancel_requested"].includes(candidate.status));
+    if (!job) return;
+    mergeAgentLoopJob(await StudioApi.cancelAgentLoopJob(selectedRun.id, job.id));
+  }
+
+  function mergeAgentLoopJob(job: AgentLoopJob) {
+    commitData((current) => {
+      if (!current) return current;
+      const jobs = mergeMonotonicAgentLoopJob(current.agentLoopJobs, job);
+      return jobs === current.agentLoopJobs ? current : { ...current, updatedAt: job.updatedAt, agentLoopJobs: jobs };
+    });
   }
 
   async function loadExecutionPreview(nodeId: string) {
@@ -244,7 +397,7 @@ export function App({ initialData, initialInbox }: AppProps) {
       maxAttempts: 1,
       termsConfirmed: true,
     });
-    setData((current) => current ? {
+    commitData((current) => current ? {
       ...current,
       updatedAt: revisedRun.updatedAt,
       runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate),
@@ -254,31 +407,31 @@ export function App({ initialData, initialInbox }: AppProps) {
   async function reconcileRunCost(receiptId: string, actualCostCny: number, note: string, providerInvoiceId?: string) {
     if (!selectedRun) return;
     const revisedRun = await StudioApi.reconcileExecutionCost(selectedRun.id, receiptId, { actualCostCny, note, ...(providerInvoiceId ? { providerInvoiceId } : {}) });
-    setData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
+    commitData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
   }
 
   async function registerReleaseMaster(file: File, metadata: Parameters<typeof StudioApi.registerReleaseMaster>[2]) {
     if (!selectedRun) return;
     const revisedRun = await StudioApi.registerReleaseMaster(selectedRun.id, file, metadata);
-    setData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
+    commitData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
   }
 
   async function registerCover(file: File, metadata: Parameters<typeof StudioApi.registerCover>[2]) {
     if (!selectedRun) return;
     const revisedRun = await StudioApi.registerCover(selectedRun.id, file, metadata);
-    setData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
+    commitData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
   }
 
   async function selectCover(coverId: string) {
     if (!selectedRun) return;
     const revisedRun = await StudioApi.selectCover(selectedRun.id, coverId);
-    setData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
+    commitData((current) => current ? { ...current, updatedAt: revisedRun.updatedAt, runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate) } : current);
   }
 
   async function registerPublication(input: Parameters<typeof StudioApi.registerPublication>[1]) {
     if (!selectedRun) return;
     const result = await StudioApi.registerPublication(selectedRun.id, input);
-    setData((current) => current ? {
+    commitData((current) => current ? {
       ...current,
       updatedAt: result.run.updatedAt,
       runs: current.runs.map((candidate) => candidate.id === result.run.id ? result.run : candidate),
@@ -290,14 +443,14 @@ export function App({ initialData, initialInbox }: AppProps) {
 
   async function createSeries(input: Parameters<typeof StudioApi.createSeries>[0]) {
     const series = await StudioApi.createSeries(input);
-    setData((current) => current ? { ...current, series: [...current.series, series] } : current);
+    commitData((current) => current ? { ...current, series: [...current.series, series] } : current);
     await loadCandidates(false, true, true, true);
   }
 
   async function reviewResearchSource(artifactId: string, sourceId: string, verified: boolean) {
     if (!selectedRun) return;
     const revisedRun = await StudioApi.reviewResearchSource(selectedRun.id, artifactId, sourceId, verified);
-    setData((current) => current ? {
+    commitData((current) => current ? {
       ...current,
       updatedAt: revisedRun.updatedAt,
       runs: current.runs.map((candidate) => candidate.id === revisedRun.id ? revisedRun : candidate),
@@ -342,7 +495,7 @@ export function App({ initialData, initialInbox }: AppProps) {
     try {
       const started = await StudioApi.startEpisode(selectedOpportunity.id, input);
       const nodeId = recommendedNode(started.run)?.id;
-      setData(await StudioApi.loadBootstrap());
+      commitData(await StudioApi.loadBootstrap());
       setSelectedRunId(started.run.id);
       setSelectedNodeId(nodeId);
       setSelectedOpportunityId(undefined);
@@ -358,7 +511,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   function openProduction(runId: string, requestedNodeId?: string) {
     if (view === "production" && !confirmDiscardProductionDraft()) return;
     const run = data?.runs.find((candidate) => candidate.id === runId);
-    const nodeId = run?.nodes.some((node) => node.id === requestedNodeId) ? requestedNodeId : run ? recommendedNode(run)?.id : undefined;
+    const nodeId = restoredAgentLoopNodeId(data, runId, requestedNodeId);
     setSelectedRunId(runId);
     setSelectedNodeId(nodeId);
     setView("production");
@@ -398,8 +551,7 @@ export function App({ initialData, initialInbox }: AppProps) {
 
   function selectRun(runId: string) {
     if (runId !== selectedRunId && !confirmDiscardProductionDraft()) return;
-    const run = data?.runs.find((candidate) => candidate.id === runId);
-    const nodeId = run ? recommendedNode(run)?.id : undefined;
+    const nodeId = restoredAgentLoopNodeId(data, runId);
     setSelectedRunId(runId);
     setSelectedNodeId(nodeId);
     writeLocationState({ view: "production", runId, nodeId });
@@ -412,7 +564,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   }
 
   function mergeAdoptedOpportunity(opportunity: StudioBootstrap["opportunities"][number]) {
-    setData((current) => current ? {
+    commitData((current) => current ? {
       ...current,
       updatedAt: opportunity.adoptedAt,
       opportunities: [opportunity, ...current.opportunities.filter((candidate) => candidate.id !== opportunity.id)],
@@ -422,7 +574,7 @@ export function App({ initialData, initialInbox }: AppProps) {
   function confirmDiscardProductionDraft(): boolean {
     if (view !== "production" || !productionDirty) return true;
     const discard = window.confirm("当前制作步骤有未保存的结构化草稿。放弃修改并离开吗？");
-    if (discard) setProductionDirty(false);
+    if (discard) updateProductionDirty(false);
     return discard;
   }
 
@@ -459,7 +611,7 @@ export function App({ initialData, initialInbox }: AppProps) {
         {view === "production" && selectedRun ? (
           <div className="production-view">
             <label className="run-switcher"><span>当前节目</span><select aria-label="选择制作中的节目" value={selectedRun.id} onChange={(event) => selectRun(event.target.value)}>{data.runs.map((run) => <option value={run.id} key={run.id}>{run.title}</option>)}</select></label>
-            <EpisodeStudio data={data} run={selectedRun} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onReviseArtifact={reviseRunArtifact} onReviewResearchSource={reviewResearchSource} onExecuteNode={executeRunNode} onContinueAgentLoop={continueRunAgentLoop} onLoadExecutionPreview={loadExecutionPreview} onAuthorizeSpend={authorizeRunNodeSpend} onReconcileCost={reconcileRunCost} onRegisterReleaseMaster={registerReleaseMaster} onRegisterCover={registerCover} onSelectCover={selectCover} onRegisterPublication={registerPublication} onDirtyChange={setProductionDirty} />
+            <EpisodeStudio key={selectedRun.id} data={data} run={selectedRun} selectedNodeId={selectedNodeId} onSelectNode={selectNode} onReviseArtifact={reviseRunArtifact} onReviewResearchSource={reviewResearchSource} onExecuteNode={executeRunNode} onContinueAgentLoop={continueRunAgentLoop} onCancelAgentLoop={cancelRunAgentLoop} onLoadExecutionPreview={loadExecutionPreview} onAuthorizeSpend={authorizeRunNodeSpend} onReconcileCost={reconcileRunCost} onRegisterReleaseMaster={registerReleaseMaster} onRegisterCover={registerCover} onSelectCover={selectCover} onRegisterPublication={registerPublication} onDirtyChange={updateProductionDirty} />
           </div>
         ) : view === "production" ? <div className="empty-state"><span>采用一个选题后，制作现场会出现在这里。</span><button className="primary-command" type="button" onClick={() => navigate("today")}>去选题</button></div> : null}
       </main>
@@ -470,6 +622,70 @@ export function App({ initialData, initialInbox }: AppProps) {
 
 function scrollWorkbenchTop(): void {
   window.scrollTo({ top: 0, left: 0 });
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function agentLoopRequestId(): string {
+  return typeof globalThis.crypto?.randomUUID === "function"
+    ? globalThis.crypto.randomUUID()
+    : `agent-loop-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function restoredAgentLoopNodeId(
+  data: StudioBootstrap | undefined,
+  runId: string | undefined,
+  requestedNodeId?: string,
+): string | undefined {
+  const run = data?.runs.find((candidate) => candidate.id === runId);
+  if (!run) return undefined;
+  if (requestedNodeId && run.nodes.some((node) => node.id === requestedNodeId)) return requestedNodeId;
+  const latestJob = [...(data?.agentLoopJobs ?? [])].reverse().find((job) => job.runId === run.id);
+  if (latestJob?.stoppedAtNodeId && run.nodes.some((node) => node.id === latestJob.stoppedAtNodeId)) {
+    return latestJob.stoppedAtNodeId;
+  }
+  return recommendedNode(run)?.id;
+}
+
+function mergeMonotonicAgentLoopJob(jobs: AgentLoopJob[], incoming: AgentLoopJob): AgentLoopJob[] {
+  const current = jobs.find((job) => job.id === incoming.id);
+  if (current && sameAgentLoopJob(current, incoming)) return jobs;
+  if (current && !isNewerAgentLoopJob(current, incoming)) return jobs;
+  return [...jobs.filter((job) => job.id !== incoming.id), incoming];
+}
+
+function sameAgentLoopJob(left: AgentLoopJob, right: AgentLoopJob): boolean {
+  return left.id === right.id
+    && left.runId === right.runId
+    && left.idempotencyKey === right.idempotencyKey
+    && left.status === right.status
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
+    && left.cancelRequestedAt === right.cancelRequestedAt
+    && left.currentNodeId === right.currentNodeId
+    && left.stoppedAtNodeId === right.stoppedAtNodeId
+    && left.reason === right.reason
+    && left.errorMessage === right.errorMessage
+    && left.executedNodeIds.length === right.executedNodeIds.length
+    && left.executedNodeIds.every((nodeId, index) => nodeId === right.executedNodeIds[index]);
+}
+
+function isNewerAgentLoopJob(current: AgentLoopJob, incoming: AgentLoopJob): boolean {
+  const terminal = new Set<AgentLoopJob["status"]>(["cancelled", "completed", "blocked", "failed"]);
+  if (terminal.has(current.status)) return false;
+  const phase: Record<AgentLoopJob["status"], number> = {
+    queued: 0,
+    running: 1,
+    cancel_requested: 2,
+    cancelled: 3,
+    completed: 3,
+    blocked: 3,
+    failed: 3,
+  };
+  if (phase[incoming.status] < phase[current.status]) return false;
+  return Date.parse(incoming.updatedAt) >= Date.parse(current.updatedAt);
 }
 
 function readLocationState(): { view: ViewId; runId?: string; nodeId?: string; seriesId?: string } {

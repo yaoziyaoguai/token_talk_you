@@ -49,9 +49,37 @@ describe("Token Talk Codex broker", () => {
     expect(JSON.parse(firstResponse.body)).toMatchObject({ ok: true, requestId: task.requestId, output: { ideas: [] } });
   });
 
+  it("starts the idempotency retention window after a long task settles", async () => {
+    root = await mkdtemp(join(tmpdir(), "token-talk-broker-"));
+    const socketPath = join(root, "broker.sock");
+    let now = 1_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let resolveExecution: ((value: BrokerExecutionResult) => void) | undefined;
+    const execution = new Promise<BrokerExecutionResult>((resolve) => { resolveExecution = resolve; });
+    const executor: BrokerTaskExecutor = { run: vi.fn(() => execution) };
+    broker = new CodexBrokerServer({ socketPath, executor, concurrency: 1, maxBacklog: 2, idempotencyTtlMs: 5 });
+    await broker.listen();
+    const task = topicEditorRequest("topic-editor-request-long-idempotency-001");
+
+    const first = socketRequest(socketPath, "POST", "/v1/tasks", task);
+    await vi.waitFor(() => expect(executor.run).toHaveBeenCalledOnce());
+    now += 30;
+    resolveExecution?.(successfulTopicResult());
+    expect((await first).statusCode).toBe(200);
+    await Promise.resolve();
+    expect((await socketRequest(socketPath, "POST", "/v1/tasks", task)).statusCode).toBe(200);
+
+    expect(executor.run).toHaveBeenCalledOnce();
+    clock.mockRestore();
+  });
+
   it("limits runtime settings and builds a read-only Codex command", () => {
     expect(() => loadBrokerRuntimeConfig({ TOKEN_TALK_CODEX_CONCURRENCY: "3" })).toThrow("TOKEN_TALK_CODEX_CONCURRENCY");
-    expect(loadBrokerRuntimeConfig({ TOKEN_TALK_CODEX_EFFORT: "max", TOKEN_TALK_CODEX_AUDIT_EFFORT: "xhigh" })).toMatchObject({ defaultEffort: "max", auditEffort: "xhigh" });
+    expect(loadBrokerRuntimeConfig({ TOKEN_TALK_CODEX_EFFORT: "max", TOKEN_TALK_CODEX_AUDIT_EFFORT: "xhigh" })).toMatchObject({
+      defaultEffort: "max",
+      auditEffort: "xhigh",
+      timeoutMs: 720_000,
+    });
 
     const command = buildCodexExecCommand({
       codexBin: "/usr/local/bin/codex",

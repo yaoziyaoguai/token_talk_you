@@ -91,6 +91,7 @@ test("all production work surfaces remain usable through the public ingress", as
 });
 
 test("a zero-cash original episode reaches the automatic production loop", async ({ page }, testInfo) => {
+  test.setTimeout(100 * 60_000);
   test.skip(testInfo.project.name !== "production-desktop", "The mutating production journey runs once.");
   test.skip(process.env.TOKEN_TALK_ALLOW_PRODUCTION_MUTATION !== "1", "Production mutation requires explicit authorization.");
   const runtime = observeRuntime(page);
@@ -112,8 +113,8 @@ test("a zero-cash original episode reaches the automatic production loop", async
 
   await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible({ timeout: 60_000 });
   await page.getByRole("button", { name: "继续制作" }).click();
-  await expect(page.locator(".agent-loop-message")).toBeVisible({ timeout: 40 * 60_000 });
-  await expect(page.getByRole("button", { name: "制作中" })).toBeHidden({ timeout: 40 * 60_000 });
+  await expect(page.locator(".agent-loop-message")).toBeVisible({ timeout: 90 * 60_000 });
+  await expect(page.getByRole("button", { name: "制作中" })).toBeHidden({ timeout: 90 * 60_000 });
 
   const bootstrapResponse = await page.request.get("./api/bootstrap");
   expect(bootstrapResponse.ok()).toBe(true);

@@ -90,7 +90,7 @@ For an authorized manual recovery, run from the repository checkout:
 TOKEN_TALK_ENV_FILE="$PWD/.env.prod" bash scripts/deploy-production.sh
 ```
 
-The script prepares all images before mutation, backs up the workspace volume, extracts the broker artifact, restarts systemd, starts the containers without pulling during the switch, and checks both health boundaries. After the first healthy release, later failures restore the previous broker release and application image.
+The script prepares all images before mutation, backs up the workspace volume, extracts the broker artifact, atomically installs the repository-owned systemd unit, reloads and restarts the broker, starts the containers without pulling during the switch, and checks both health boundaries. The broker remains single-concurrency and allows up to 720 seconds per schema-bounded Codex task. After the first healthy release, later failures restore the previous broker release, systemd unit, and application image.
 
 ## GitHub Actions secrets
 

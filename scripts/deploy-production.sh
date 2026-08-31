@@ -9,9 +9,12 @@ broker_service=token-talk-codex-broker
 broker_root=/opt/token-talk/codex-broker
 broker_socket=/run/token-talk-codex/worker.sock
 broker_user=token-talk-codex
+broker_unit_source="$repository_root/apps/codex-broker/deploy/token-talk-codex-broker.service"
+broker_unit_target=/etc/systemd/system/token-talk-codex-broker.service
 compose=(docker compose --project-name token-talk --env-file "$environment_file" -f "$repository_root/docker/docker-compose.prod.yml")
 
 [[ -f "$environment_file" ]] || { echo "缺少生产环境文件：$environment_file" >&2; exit 1; }
+[[ -f "$broker_unit_source" ]] || { echo "缺少 broker systemd unit：$broker_unit_source" >&2; exit 1; }
 systemctl cat "$broker_service" >/dev/null 2>&1 || { echo "请先运行 scripts/setup-codex-broker-host.sh" >&2; exit 1; }
 
 bridge_gid="$(getent group token-talk-bridge | cut -d: -f3 || true)"
@@ -103,6 +106,8 @@ prepare_images() {
 
 previous_image="$(docker inspect --format='{{.Image}}' "$container" 2>/dev/null || true)"
 previous_broker_release="$(readlink -f "$broker_root/current" 2>/dev/null || true)"
+previous_broker_unit="$(mktemp)"
+cp "$broker_unit_target" "$previous_broker_unit"
 deployment_mutated=0
 deployment_committed=0
 
@@ -125,6 +130,11 @@ preserve_previous_app() {
 
 rollback() {
   local failed=0
+  if install -m 0644 "$previous_broker_unit" "$broker_unit_target"; then
+    systemctl daemon-reload || failed=1
+  else
+    failed=1
+  fi
   if [[ -n "$previous_broker_release" && "$previous_broker_release" == "$broker_root"/releases/* && -d "$previous_broker_release" ]]; then
     ln -sfn "$previous_broker_release" "$broker_root/current" || failed=1
     systemctl restart "$broker_service" || failed=1
@@ -156,6 +166,7 @@ on_exit() {
       echo "回滚未完整恢复，需要人工检查 systemd 与容器状态。" >&2
     fi
   fi
+  rm -f "$previous_broker_unit"
   exit "$status"
 }
 trap on_exit EXIT
@@ -186,6 +197,8 @@ prepare_images
 install_broker_release
 deployment_mutated=1
 
+install -m 0644 "$broker_unit_source" "$broker_unit_target"
+systemctl daemon-reload
 systemctl restart "$broker_service"
 if ! wait_for_broker; then
   systemctl --no-pager --lines=80 status "$broker_service" || true

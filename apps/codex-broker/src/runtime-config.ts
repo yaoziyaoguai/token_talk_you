@@ -25,7 +25,7 @@ export function loadBrokerRuntimeConfig(environment: NodeJS.ProcessEnv = process
     ...(text(environment, "TOKEN_TALK_CODEX_MODEL") ? { model: text(environment, "TOKEN_TALK_CODEX_MODEL")! } : {}),
     defaultEffort: defaultEffort as BrokerRuntimeConfig["defaultEffort"],
     auditEffort: auditEffort as BrokerRuntimeConfig["auditEffort"],
-    timeoutMs: integer(environment, "TOKEN_TALK_CODEX_TIMEOUT_MS", 300_000, 10_000, 900_000),
+    timeoutMs: integer(environment, "TOKEN_TALK_CODEX_TIMEOUT_MS", 720_000, 10_000, 900_000),
     terminationGraceMs: integer(environment, "TOKEN_TALK_CODEX_TERMINATION_GRACE_MS", 2_000, 250, 10_000),
     concurrency: integer(environment, "TOKEN_TALK_CODEX_CONCURRENCY", 1, 1, 2),
     maxBacklog: integer(environment, "TOKEN_TALK_CODEX_MAX_BACKLOG", 20, 1, 100),

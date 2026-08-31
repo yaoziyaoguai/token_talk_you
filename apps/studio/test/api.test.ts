@@ -53,8 +53,32 @@ describe("StudioApi request ownership", () => {
     await StudioApi.loadBootstrap();
     await StudioApi.executeNode("run-deep-reading", "source-packet");
 
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store" });
     const requestHeaders = new Headers(fetcher.mock.calls[1]?.[1]?.headers);
     expect(requestHeaders.get("x-token-talk-token")).toBe(token);
+  });
+
+  it("bypasses caches while polling Agent Loop status", async () => {
+    const snapshot = createSeedSnapshot(NOW);
+    const job = {
+      id: "agent-loop-job-cache-001",
+      runId: snapshot.runs[0]!.id,
+      idempotencyKey: "agent-loop-job-cache-key-001",
+      status: "running" as const,
+      createdAt: NOW,
+      updatedAt: NOW,
+      executedNodeIds: [],
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(job), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(job), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+
+    await StudioApi.loadLatestAgentLoopJob(job.runId);
+    await StudioApi.loadAgentLoopJob(job.runId, job.id);
+
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ cache: "no-store" });
+    expect(fetcher.mock.calls[1]?.[1]).toMatchObject({ cache: "no-store" });
   });
 
   it("uploads release media with rights metadata instead of exposing protected artifact fields", async () => {

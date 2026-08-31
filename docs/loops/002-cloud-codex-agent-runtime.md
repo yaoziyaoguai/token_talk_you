@@ -1,7 +1,7 @@
 # Loop 002: Cloud Codex Agent Runtime
 
 - Date: 2026-08-29
-- Status: local implementation complete; cloud ship pending approval
+- Status: deployment authorized; cloud ship and end-to-end verification in progress
 - Branch: `codex/token-talk-loop`
 - Objective: make the Alibaba Cloud deployment the production runtime for Token Talk, with Codex-backed semantic nodes, bounded autonomous audit-and-repair loops, editable node versions, and one mandatory human gate before paid TTS.
 
@@ -25,6 +25,8 @@ Selected semantic nodes run a bounded loop:
 
 Every attempt persists the effective input versions, output version, task kind, prompt version, provider/model identity, findings, timestamps, stop reason, and cost class. The loop never retries an ambiguous paid call.
 
+The Web request does not own the loop lifetime. Starting a loop creates a persisted server job with an idempotency key; browsers poll monotonic, `no-store` job state and may reconnect from another tab or after refresh. Studio serializes all jobs through one host-Codex queue. If the service restarts while a node receipt is still running, the node and every active or queued job for that episode stop at `interrupted_execution` for reconciliation instead of continuing from uncertain state.
+
 ## Human Interaction
 
 - Every creator-facing node remains editable at any time.
@@ -40,6 +42,7 @@ Read-only inspection of the `aliyun` host confirmed:
 - Ubuntu Linux with Docker 29 and systemd 249.
 - The existing VideoFactory broker runs as `vf-codex`, communicates through a group-restricted Unix socket, and reports a healthy bounded queue.
 - The service uses Codex CLI `0.149.1`, authenticated with ChatGPT, `high` reasoning effort, concurrency 1, and a 285-second task timeout.
+- Token Talk keeps the same single-task host boundary but gives each schema-bounded Codex task up to 720 seconds so long-form research, script generation, and independent audits do not fail at the former VideoFactory-sized timeout.
 - The host has about 7.1 GiB RAM and 5.9 GiB free on a 40 GiB root volume. Token Talk must bound broker concurrency, image size, task scratch data, media retention, and Docker layers.
 
 ## Success Criteria
@@ -70,14 +73,14 @@ Read-only inspection of the `aliyun` host confirmed:
 | discover | completed | VideoFactory graph/query, broker and deployment review, read-only Alibaba Cloud runtime inspection |
 | plan | completed | This loop contract and the architecture decisions in `DESIGN.md` |
 | implement | completed locally | Token Talk broker, Agent loop, editable versions, TTS lock, release editorial, Podcasting 2.0 package, loudness QC, and deployment assets |
-| verify | completed locally | 259 unit/integration tests, 4 desktop/mobile E2E tests, typecheck, production build and bundle smoke passed; the hardened Linux image built and ran as non-root with a read-only root filesystem; eSpeak NG generated Mandarin audio and FFmpeg/ffprobe produced and measured AAC/M4A output |
+| verify | completed locally | 290 unit/integration tests, 4 desktop/mobile E2E tests, typecheck, production build, Compose validation and bundle smoke passed; the hardened Linux image built and ran as non-root with a read-only root filesystem; eSpeak NG generated Mandarin audio and FFmpeg/ffprobe produced and measured AAC/M4A output |
 | review | completed locally | Real 30-minute Codex episode path, browser visual audit at 1440 and 390 px, code boundary review, shell syntax, YAML and deployment configuration checks |
-| ship | pending | Explicitly approved Alibaba Cloud deployment with health and rollback evidence |
+| ship | in progress | Production change is authorized; GitHub Actions deployment, public health checks and zero-cash cloud Agent Loop evidence remain required |
 | learn | completed locally | Long-form role mapping, release standards, provider constraints, real-run findings and operating limits recorded in design and research notes |
 
 ## Local Verification
 
-- `pnpm test`: 259 tests passed across Agent protocol, domain, workflow, broker and Studio.
+- `pnpm test`: 290 tests passed across Agent protocol, domain, workflow, broker and Studio.
 - `pnpm typecheck && pnpm build`: passed; the browser bundle no longer imports Node-only crypto code.
 - `pnpm test:e2e`: four desktop/mobile workflow and locked-chapter cases passed.
 - `bash scripts/smoke-production-build.sh`: production bundle, health endpoint, SPA fallback and forged Host rejection passed.

@@ -15,7 +15,7 @@ Environment=TOKEN_TALK_CODEX_SOCKET_PATH=/run/token-talk-codex/worker.sock
 Environment=TOKEN_TALK_CODEX_WORKSPACE_ROOT=/var/lib/token-talk-codex/workspace
 Environment=TOKEN_TALK_CODEX_EFFORT=max
 Environment=TOKEN_TALK_CODEX_AUDIT_EFFORT=max
-Environment=TOKEN_TALK_CODEX_TIMEOUT_MS=285000
+Environment=TOKEN_TALK_CODEX_TIMEOUT_MS=720000
 ExecStart=/opt/token-talk/codex-broker/bin/node /opt/token-talk/codex-broker/current/dist/main.js
 RuntimeDirectory=token-talk-codex
 RuntimeDirectoryMode=0750

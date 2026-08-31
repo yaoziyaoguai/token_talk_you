@@ -3,6 +3,7 @@
 import { SeriesBibleSchema } from "@token-talk/domain/model";
 import {
   AdoptCandidateResponseSchema,
+  AgentLoopJobResponseSchema,
   AgentLoopResultSchema,
   CandidateInboxSchema,
   MusicAssetSchema,
@@ -22,6 +23,7 @@ import {
   type CreateCustomOpportunityInput,
   type ExecuteNodeInput,
   type AgentLoopResult,
+  type AgentLoopJob,
   type StartEpisodeInput,
   type StartEpisodeResponse,
   type NodeExecutionPreview,
@@ -110,7 +112,7 @@ export const StudioApi = {
   },
 
   async loadBootstrap(): Promise<StudioBootstrap> {
-    const { response, body } = await request("/api/bootstrap");
+    const { response, body } = await request("/api/bootstrap", { cache: "no-store" });
     if (!response.ok) throw new Error("无法载入 Studio 数据");
     const bootstrap = StudioBootstrapSchema.parse(body);
     mutationToken = bootstrap.mutationToken;
@@ -217,6 +219,38 @@ export const StudioApi = {
     }, EXECUTION_TIMEOUT_MS);
     if (!response.ok) throw new Error(serverMessage(body, "无法继续自动制作"));
     return AgentLoopResultSchema.parse(body);
+  },
+
+  async startAgentLoopJob(runId: string, idempotencyKey: string): Promise<AgentLoopJob> {
+    const { response, body } = await request(`/api/runs/${encodeURIComponent(runId)}/agent-loop-jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": idempotencyKey },
+      body: "{}",
+    });
+    if (!response.ok) throw new Error(serverMessage(body, "无法启动云端自动制作"));
+    return AgentLoopJobResponseSchema.parse(body);
+  },
+
+  async loadLatestAgentLoopJob(runId: string): Promise<AgentLoopJob> {
+    const { response, body } = await request(`/api/runs/${encodeURIComponent(runId)}/agent-loop-jobs/latest`, { cache: "no-store" });
+    if (!response.ok) throw new Error(serverMessage(body, "无法读取云端自动制作状态"));
+    return AgentLoopJobResponseSchema.parse(body);
+  },
+
+  async loadAgentLoopJob(runId: string, jobId: string): Promise<AgentLoopJob> {
+    const { response, body } = await request(`/api/runs/${encodeURIComponent(runId)}/agent-loop-jobs/${encodeURIComponent(jobId)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(serverMessage(body, "无法读取云端自动制作状态"));
+    return AgentLoopJobResponseSchema.parse(body);
+  },
+
+  async cancelAgentLoopJob(runId: string, jobId: string): Promise<AgentLoopJob> {
+    const { response, body } = await request(`/api/runs/${encodeURIComponent(runId)}/agent-loop-jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    if (!response.ok) throw new Error(serverMessage(body, "无法停止云端自动制作"));
+    return AgentLoopJobResponseSchema.parse(body);
   },
 
   async loadExecutionPreview(runId: string, nodeId: string): Promise<NodeExecutionPreview> {

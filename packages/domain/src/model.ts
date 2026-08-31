@@ -326,6 +326,28 @@ export const WorkflowRunSchema = z.object({
   ? { ...run, status: "release_ready" as const }
   : run);
 
+export const AgentLoopJobSchema = z.object({
+  id: z.string().min(1),
+  runId: z.string().min(1),
+  idempotencyKey: z.string().trim().regex(/^[A-Za-z0-9_-]{8,128}$/),
+  status: z.enum(["queued", "running", "cancel_requested", "cancelled", "completed", "blocked", "failed"]),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  executedNodeIds: z.array(z.string().min(1)).max(40).default([]),
+  currentNodeId: z.string().min(1).optional(),
+  stoppedAtNodeId: z.string().min(1).optional(),
+  reason: z.enum([
+    "completed_available_work",
+    "awaiting_spend_authorization",
+    "requires_input",
+    "failed",
+    "repair_limit",
+    "interrupted_execution",
+  ]).optional(),
+  errorMessage: z.string().trim().min(1).max(1_000).optional(),
+  cancelRequestedAt: z.string().datetime().optional(),
+});
+
 export const StudioSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
   revision: z.number().int().nonnegative().default(0),
@@ -335,6 +357,7 @@ export const StudioSnapshotSchema = z.object({
   providers: z.array(ProviderProfileSchema),
   runs: z.array(WorkflowRunSchema),
   opportunities: z.array(EpisodeOpportunitySchema).default([]),
+  agentLoopJobs: z.array(AgentLoopJobSchema).default([]),
 });
 
 export type SeriesBible = z.infer<typeof SeriesBibleSchema>;
@@ -350,4 +373,5 @@ export type WorkflowNode = z.infer<typeof WorkflowNodeSchema>;
 export type ExecutionReceipt = z.infer<typeof ExecutionReceiptSchema>;
 export type PublicationRecord = z.infer<typeof PublicationRecordSchema>;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
+export type AgentLoopJob = z.infer<typeof AgentLoopJobSchema>;
 export type StudioSnapshot = z.infer<typeof StudioSnapshotSchema>;

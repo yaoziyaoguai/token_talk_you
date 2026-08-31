@@ -8,6 +8,7 @@ import {
   PublicationRecordSchema,
   SeriesBibleSchema,
   SpendAuthorizationSchema,
+  type AgentLoopJob,
   type EpisodeCandidate,
   type EpisodeOpportunity,
   type SeriesBible,
@@ -53,6 +54,9 @@ export class StudioService {
   private mutationTail: Promise<void> = Promise.resolve();
   private readonly executingNodes = new Set<string>();
   private readonly detachedExecutions = new Map<string, Promise<void>>();
+  private readonly activeAgentLoopJobs = new Map<string, Promise<void>>();
+  private agentLoopJobTail: Promise<void> = Promise.resolve();
+  private closing = false;
   private closePromise?: Promise<void>;
 
   private constructor(
@@ -79,9 +83,36 @@ export class StudioService {
       if (!nodeExecutor) throw new Error("Studio requires a node executor");
       const snapshot = await repository.load();
       const abandonedRunIds = new Set(snapshot.runs.filter(hasRunningExecution).map((run) => run.id));
-      if (abandonedRunIds.size > 0) {
+      const interruptedNodeIds = new Map(snapshot.runs.flatMap((run) => {
+        const runningNode = run.nodes.find((candidate) => candidate.status === "running");
+        const runningReceipt = run.executionReceipts.find((receipt) => receipt.status === "running" && !receipt.finishedAt);
+        const nodeId = runningNode?.id ?? runningReceipt?.nodeId;
+        return nodeId ? [[run.id, nodeId] as const] : [];
+      }));
+      const interruptedAgentLoopJobs = snapshot.agentLoopJobs.filter((job) =>
+        job.status === "running" || job.status === "cancel_requested");
+      if (abandonedRunIds.size > 0 || interruptedAgentLoopJobs.length > 0) {
         const recoveredAt = now();
         snapshot.runs = snapshot.runs.map((run) => abandonedRunIds.has(run.id) ? recoverInterruptedExecutions(run, recoveredAt) : run);
+        snapshot.agentLoopJobs = snapshot.agentLoopJobs.map((job) => {
+          if (["queued", "running", "cancel_requested"].includes(job.status) && abandonedRunIds.has(job.runId)) {
+            const interruptedNodeId = interruptedNodeIds.get(job.runId) ?? job.currentNodeId;
+            const settledJob = withoutCurrentAgentLoopNode(job);
+            return {
+              ...settledJob,
+              status: "blocked" as const,
+              updatedAt: recoveredAt,
+              reason: "interrupted_execution" as const,
+              ...(interruptedNodeId ? { stoppedAtNodeId: interruptedNodeId } : {}),
+              errorMessage: "服务重启时仍有节点执行，结果和费用状态需要核对。",
+            };
+          }
+          if (job.status === "cancel_requested") {
+            return { ...withoutCurrentAgentLoopNode(job), status: "cancelled" as const, updatedAt: recoveredAt };
+          }
+          if (job.status !== "running") return job;
+          return { ...withoutCurrentAgentLoopNode(job), status: "queued" as const, updatedAt: recoveredAt };
+        });
         snapshot.updatedAt = recoveredAt;
         await repository.save(snapshot);
       }
@@ -96,6 +127,10 @@ export class StudioService {
         ...(trendCollectionIntervalMs === undefined ? {} : { intervalMs: trendCollectionIntervalMs }),
       });
       const service = new StudioService(repository, now, candidates, trendCollector, nodeExecutor, releaseWorkspaceLease);
+      const recoveredSnapshot = await repository.load();
+      for (const job of recoveredSnapshot.agentLoopJobs) {
+        if (job.status === "queued") service.scheduleAgentLoopJob(job.id);
+      }
       trendCollector.start();
       return service;
     } catch (error) {
@@ -106,7 +141,10 @@ export class StudioService {
 
   async close(): Promise<void> {
     this.closePromise ??= (async () => {
+      this.closing = true;
       await this.trendCollector.close();
+      await Promise.allSettled([...this.activeAgentLoopJobs.values()]);
+      await this.agentLoopJobTail;
       await Promise.allSettled([...this.detachedExecutions.values()]);
       await this.releaseWorkspaceLease();
     })();
@@ -115,6 +153,72 @@ export class StudioService {
 
   async bootstrap(): Promise<StudioSnapshot> {
     return this.repository.load();
+  }
+
+  async startAgentLoopJob(runId: string, idempotencyKey: string): Promise<AgentLoopJob> {
+    const job = await this.withMutationLock(async () => {
+      const snapshot = await this.repository.load();
+      if (!snapshot.runs.some((run) => run.id === runId)) throw new StudioNotFoundError(`Run '${runId}' was not found`);
+      const replay = snapshot.agentLoopJobs.find((candidate) => candidate.idempotencyKey === idempotencyKey);
+      if (replay) {
+        if (replay.runId !== runId) throw new StudioConflictError("这个幂等请求标识已经用于另一集节目。");
+        return replay;
+      }
+      const active = [...snapshot.agentLoopJobs].reverse().find((candidate) =>
+        candidate.runId === runId && ["queued", "running", "cancel_requested"].includes(candidate.status));
+      if (active) throw new StudioConflictError("这集节目已有自动制作作业正在运行。");
+      const createdAt = this.now();
+      const created: AgentLoopJob = {
+        id: `agent-loop-job-${randomUUID()}`,
+        runId,
+        idempotencyKey,
+        status: "queued",
+        createdAt,
+        updatedAt: createdAt,
+        executedNodeIds: [],
+      };
+      snapshot.agentLoopJobs.push(created);
+      snapshot.updatedAt = createdAt;
+      await this.repository.save(snapshot);
+      return created;
+    });
+    if (job.status === "queued") this.scheduleAgentLoopJob(job.id);
+    return job;
+  }
+
+  async latestAgentLoopJob(runId: string): Promise<AgentLoopJob> {
+    const snapshot = await this.repository.load();
+    if (!snapshot.runs.some((run) => run.id === runId)) throw new StudioNotFoundError(`Run '${runId}' was not found`);
+    const job = [...snapshot.agentLoopJobs].reverse().find((candidate) => candidate.runId === runId);
+    if (!job) throw new StudioNotFoundError(`Run '${runId}' has no Agent Loop job`);
+    return job;
+  }
+
+  async agentLoopJob(runId: string, jobId: string): Promise<AgentLoopJob> {
+    const snapshot = await this.repository.load();
+    if (!snapshot.runs.some((run) => run.id === runId)) throw new StudioNotFoundError(`Run '${runId}' was not found`);
+    const job = snapshot.agentLoopJobs.find((candidate) => candidate.id === jobId && candidate.runId === runId);
+    if (!job) throw new StudioNotFoundError(`Agent Loop job '${jobId}' was not found`);
+    return job;
+  }
+
+  async cancelAgentLoopJob(runId: string, jobId: string): Promise<AgentLoopJob> {
+    return this.withMutationLock(async () => {
+      const snapshot = await this.repository.load();
+      if (!snapshot.runs.some((run) => run.id === runId)) throw new StudioNotFoundError(`Run '${runId}' was not found`);
+      const index = snapshot.agentLoopJobs.findIndex((candidate) => candidate.id === jobId && candidate.runId === runId);
+      const job = snapshot.agentLoopJobs[index];
+      if (!job) throw new StudioNotFoundError(`Agent Loop job '${jobId}' was not found`);
+      if (["cancelled", "completed", "blocked", "failed"].includes(job.status)) return job;
+      const cancelledAt = this.now();
+      const revised: AgentLoopJob = job.status === "queued"
+        ? { ...withoutCurrentAgentLoopNode(job), status: "cancelled", updatedAt: cancelledAt, cancelRequestedAt: cancelledAt }
+        : { ...job, status: "cancel_requested", updatedAt: cancelledAt, cancelRequestedAt: cancelledAt };
+      snapshot.agentLoopJobs[index] = revised;
+      snapshot.updatedAt = cancelledAt;
+      await this.repository.save(snapshot);
+      return revised;
+    });
   }
 
   async releasePackage(runId: string): Promise<ReleasePackage> {
@@ -636,7 +740,13 @@ export class StudioService {
     });
   }
 
-  async executeNode(runId: string, nodeId: string, requestSignal?: AbortSignal, input: ExecuteNodeInput = {}): Promise<WorkflowRun> {
+  async executeNode(
+    runId: string,
+    nodeId: string,
+    requestSignal?: AbortSignal,
+    input: ExecuteNodeInput = {},
+    agentLoopJobId?: string,
+  ): Promise<WorkflowRun> {
     const executionKey = `${runId}:${nodeId}`;
     if (this.executingNodes.has(executionKey)) {
       throw new StudioConflictError("这个制作步骤正在运行，请等待当前执行完成。");
@@ -649,6 +759,10 @@ export class StudioService {
         const index = snapshot.runs.findIndex((run) => run.id === runId);
         const run = snapshot.runs[index];
         if (!run) throw new StudioNotFoundError(`Run '${runId}' was not found`);
+        if (agentLoopJobId) {
+          const job = snapshot.agentLoopJobs.find((candidate) => candidate.id === agentLoopJobId && candidate.runId === runId);
+          if (!job || job.status !== "running") throw new AgentLoopStoppedError();
+        }
         assertRunNotPublished(run);
         const node = run.nodes.find((candidate) => candidate.id === nodeId);
         if (!node) throw new StudioNotFoundError(`Node '${nodeId}' was not found`);
@@ -695,6 +809,12 @@ export class StudioService {
         );
         if (!runningReceipt) throw new Error("节点执行缺少持久化 attempt receipt");
         snapshot.runs[index] = running;
+        if (agentLoopJobId) {
+          const jobIndex = snapshot.agentLoopJobs.findIndex((candidate) => candidate.id === agentLoopJobId && candidate.runId === runId);
+          const job = snapshot.agentLoopJobs[jobIndex];
+          if (!job || job.status !== "running") throw new AgentLoopStoppedError();
+          snapshot.agentLoopJobs[jobIndex] = { ...job, currentNodeId: nodeId, updatedAt: startedAt };
+        }
         snapshot.updatedAt = startedAt;
         await this.repository.save(snapshot);
         return {
@@ -795,7 +915,28 @@ export class StudioService {
         }
         snapshot.runs[index] = executed;
         synchronizeOpportunityStatus(snapshot, executed);
-        snapshot.updatedAt = this.now();
+        const completedAt = this.now();
+        if (agentLoopJobId) {
+          const jobIndex = snapshot.agentLoopJobs.findIndex((candidate) => candidate.id === agentLoopJobId && candidate.runId === runId);
+          const job = snapshot.agentLoopJobs[jobIndex];
+          if (!job || !["running", "cancel_requested"].includes(job.status)) throw new AgentLoopStoppedError();
+          const settledJob = withoutCurrentAgentLoopNode(job);
+          const executedNodeIds = [...job.executedNodeIds, nodeId].slice(0, 40);
+          const completedNode = executed.nodes.find((candidate) => candidate.id === nodeId);
+          snapshot.agentLoopJobs[jobIndex] = job.status === "cancel_requested"
+            ? { ...settledJob, status: "cancelled", updatedAt: completedAt, executedNodeIds }
+            : completedNode?.status === "needs_human"
+              ? {
+                  ...settledJob,
+                  status: "blocked",
+                  updatedAt: completedAt,
+                  executedNodeIds,
+                  stoppedAtNodeId: nodeId,
+                  reason: "requires_input",
+                }
+              : { ...settledJob, updatedAt: completedAt, executedNodeIds };
+        }
+        snapshot.updatedAt = completedAt;
         try {
           await this.repository.save(snapshot);
         } catch (error) {
@@ -815,7 +956,27 @@ export class StudioService {
     }
   }
 
-  async continueAgentLoop(runId: string, requestSignal?: AbortSignal, maxExecutedNodes = 40): Promise<AgentLoopResult> {
+  async continueAgentLoop(
+    runId: string,
+    requestSignal?: AbortSignal,
+    maxExecutedNodes = 40,
+    agentLoopJobId?: string,
+  ): Promise<AgentLoopResult> {
+    return this.enqueueAgentLoopOperation(() => {
+      if (this.closing) throw new StudioConflictError("Studio 正在关闭，不能继续自动制作。");
+      if (requestSignal?.aborted) {
+        throw requestSignal.reason instanceof Error ? requestSignal.reason : new Error("自动制作请求已取消。");
+      }
+      return this.continueAgentLoopStep(runId, requestSignal, maxExecutedNodes, agentLoopJobId);
+    });
+  }
+
+  private async continueAgentLoopStep(
+    runId: string,
+    requestSignal?: AbortSignal,
+    maxExecutedNodes = 40,
+    agentLoopJobId?: string,
+  ): Promise<AgentLoopResult> {
     const executedNodeIds: string[] = [];
     const stepLimit = Math.max(1, Math.min(40, Math.round(maxExecutedNodes)));
     for (let step = 0; step < stepLimit; step += 1) {
@@ -875,7 +1036,13 @@ export class StudioService {
         reason: blocker?.reason ?? (run.nodes.some((candidate) => candidate.status === "failed") ? "failed" : "completed_available_work"),
       };
 
-      const updated = await this.executeNode(runId, selectedNode.id, requestSignal, nextAgentLoopExecutionInput(run, selectedNode));
+      const updated = await this.executeNode(
+        runId,
+        selectedNode.id,
+        requestSignal,
+        nextAgentLoopExecutionInput(run, selectedNode),
+        agentLoopJobId,
+      );
       executedNodeIds.push(selectedNode.id);
       const updatedNode = updated.nodes.find((candidate) => candidate.id === selectedNode.id);
       if (updatedNode?.status === "failed") {
@@ -905,6 +1072,124 @@ export class StudioService {
         ? "continue_available_work"
         : "completed_available_work",
     };
+  }
+
+  private scheduleAgentLoopJob(jobId: string): void {
+    if (this.closing || this.activeAgentLoopJobs.has(jobId)) return;
+    const execution = this.enqueueAgentLoopOperation(async () => {
+        if (this.closing) return;
+        try {
+          await this.runAgentLoopJob(jobId);
+        } catch (error) {
+          await this.failAgentLoopJob(jobId, error);
+        }
+      })
+      .finally(() => {
+        this.activeAgentLoopJobs.delete(jobId);
+      });
+    this.activeAgentLoopJobs.set(jobId, execution);
+  }
+
+  private async runAgentLoopJob(jobId: string): Promise<void> {
+    let job = await this.updateAgentLoopJob(jobId, (current) => {
+      if (current.status === "cancel_requested") return { ...withoutCurrentAgentLoopNode(current), status: "cancelled", updatedAt: this.now() };
+      if (current.status !== "queued") return current;
+      return { ...current, status: "running", updatedAt: this.now() };
+    });
+    if (job.status !== "running") return;
+
+    while (!this.closing) {
+      job = await this.latestAgentLoopJob(job.runId);
+      if (job.id !== jobId || job.status === "cancel_requested") {
+        if (job.id === jobId && job.status === "cancel_requested") {
+          await this.updateAgentLoopJob(jobId, (current) => ({ ...withoutCurrentAgentLoopNode(current), status: "cancelled", updatedAt: this.now() }));
+        }
+        return;
+      }
+      if (job.status !== "running") return;
+      if (job.executedNodeIds.length >= 40) {
+        await this.updateAgentLoopJob(jobId, (current) => ({
+          ...current,
+          status: "blocked",
+          updatedAt: this.now(),
+          reason: "repair_limit",
+          errorMessage: "自动制作达到 40 个节点执行上限，已停止以避免无界循环。",
+        }));
+        return;
+      }
+
+      let result: AgentLoopResult;
+      try {
+        result = await this.continueAgentLoopStep(job.runId, undefined, 1, jobId);
+      } catch (error) {
+        if (!(error instanceof AgentLoopStoppedError)) throw error;
+        const stopped = await this.agentLoopJob(job.runId, jobId);
+        if (stopped.status === "cancel_requested") {
+          await this.updateAgentLoopJob(jobId, (current) => ({ ...withoutCurrentAgentLoopNode(current), status: "cancelled", updatedAt: this.now() }));
+        }
+        return;
+      }
+      const revised = await this.updateAgentLoopJob(jobId, (current) => {
+        if (["cancelled", "completed", "blocked", "failed"].includes(current.status)) return current;
+        const { currentNodeId: _currentNodeId, stoppedAtNodeId: _stoppedAtNodeId, reason: _reason, errorMessage: _errorMessage, ...active } = current;
+        const base = {
+          ...active,
+          updatedAt: this.now(),
+          ...(result.stoppedAtNodeId ? { stoppedAtNodeId: result.stoppedAtNodeId } : {}),
+        };
+        if (current.status === "cancel_requested") return { ...base, status: "cancelled" as const };
+        if (result.reason === "continue_available_work") return { ...base, status: "running" as const };
+        if (result.reason === "completed_available_work") {
+          return { ...base, status: "completed" as const, reason: result.reason };
+        }
+        if (result.reason === "cancelled") return { ...base, status: "cancelled" as const };
+        return { ...base, status: "blocked" as const, reason: result.reason };
+      });
+      if (revised.status !== "running") return;
+    }
+  }
+
+  private async updateAgentLoopJob(
+    jobId: string,
+    update: (job: AgentLoopJob) => AgentLoopJob,
+  ): Promise<AgentLoopJob> {
+    return this.withMutationLock(async () => {
+      const snapshot = await this.repository.load();
+      const index = snapshot.agentLoopJobs.findIndex((candidate) => candidate.id === jobId);
+      const current = snapshot.agentLoopJobs[index];
+      if (!current) throw new StudioNotFoundError(`Agent Loop job '${jobId}' was not found`);
+      const revised = update(current);
+      if (revised === current) return current;
+      snapshot.agentLoopJobs[index] = revised;
+      snapshot.updatedAt = revised.updatedAt;
+      await this.repository.save(snapshot);
+      return revised;
+    });
+  }
+
+  private async failAgentLoopJob(jobId: string, error: unknown): Promise<void> {
+    try {
+      await this.updateAgentLoopJob(jobId, (current) => {
+        if (["cancelled", "completed", "blocked", "failed"].includes(current.status)) return current;
+        const settled = withoutCurrentAgentLoopNode(current);
+        return {
+          ...settled,
+          status: "failed",
+          updatedAt: this.now(),
+          reason: "failed",
+          ...(current.currentNodeId && !current.stoppedAtNodeId ? { stoppedAtNodeId: current.currentNodeId } : {}),
+          errorMessage: safeExecutionError(error),
+        };
+      });
+    } catch {
+      // 原始作业错误仍由节点回执保存；这里不能用二次持久化失败覆盖它。
+    }
+  }
+
+  private enqueueAgentLoopOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const scheduled = this.agentLoopJobTail.then(operation);
+    this.agentLoopJobTail = scheduled.then(() => undefined, () => undefined);
+    return scheduled;
   }
 
   private async withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -1463,6 +1748,11 @@ class UnconfirmedExecutionError extends Error {
   }
 }
 
+function withoutCurrentAgentLoopNode(job: AgentLoopJob): AgentLoopJob {
+  const { currentNodeId: _currentNodeId, ...settled } = job;
+  return settled;
+}
+
 function safeExecutionError(error: unknown): string {
   const raw = error instanceof Error ? error.message : "节点执行失败";
   const redacted = raw
@@ -1472,6 +1762,8 @@ function safeExecutionError(error: unknown): string {
     .trim();
   return (redacted || "节点执行失败").slice(0, 800);
 }
+
+class AgentLoopStoppedError extends Error {}
 
 export class StudioNotFoundError extends Error {}
 export class StudioConflictError extends Error {}

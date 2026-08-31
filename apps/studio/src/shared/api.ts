@@ -1,4 +1,5 @@
 import {
+  AgentLoopJobSchema,
   CastPolicySchema,
   EpisodeCandidateSchema,
   EpisodeOpportunitySchema,
@@ -6,6 +7,7 @@ import {
   StudioSnapshotSchema,
   WorkflowRunSchema,
   type SeriesBible,
+  type AgentLoopJob,
   type StudioSnapshot,
   type WorkflowRun,
 } from "@token-talk/domain/model";
@@ -117,6 +119,8 @@ export const ExecuteNodeInputSchema = z.object({
   segmentId: z.string().trim().regex(/^[A-Za-z0-9_-]{1,80}$/).optional(),
 }).strict();
 
+export const AgentLoopIdempotencyKeySchema = z.string().trim().regex(/^[A-Za-z0-9_-]{8,128}$/);
+
 export const AgentLoopResultSchema = z.object({
   run: WorkflowRunSchema,
   executedNodeIds: z.array(z.string().min(1)).max(40),
@@ -128,8 +132,11 @@ export const AgentLoopResultSchema = z.object({
     "requires_input",
     "failed",
     "repair_limit",
+    "cancelled",
   ]),
 });
+
+export const AgentLoopJobResponseSchema = AgentLoopJobSchema;
 
 export const ReconcileExecutionCostInputSchema = z.object({
   actualCostCny: z.number().min(0).max(10_000),
@@ -377,6 +384,7 @@ export type NodeExecutionPreview = z.infer<typeof NodeExecutionPreviewSchema>;
 export type AuthorizeNodeSpendInput = z.infer<typeof AuthorizeNodeSpendInputSchema>;
 export type ExecuteNodeInput = z.infer<typeof ExecuteNodeInputSchema>;
 export type AgentLoopResult = z.infer<typeof AgentLoopResultSchema>;
+export type { AgentLoopJob };
 export type ReconcileExecutionCostInput = z.infer<typeof ReconcileExecutionCostInputSchema>;
 export type ReleaseRightsBasis = z.infer<typeof ReleaseRightsBasisSchema>;
 export type ReleasePackage = z.infer<typeof ReleasePackageSchema>;
