@@ -6,6 +6,8 @@ import { canonicalizeHttpsUrl, type ResearchSearchGateway, type ResearchSource }
 import { reviewResearchPacket } from "./research-ledger.js";
 import { StaticSourceVerifier, type ResearchSourceVerifier, type SourceVerificationCheck } from "./source-verifier.js";
 
+const RESEARCH_NODE_TIMEOUT_MS = 120_000;
+
 export class ResearchNodeExecutor implements NodeExecutor {
   constructor(
     private readonly gateway: ResearchSearchGateway,
@@ -21,7 +23,7 @@ export class ResearchNodeExecutor implements NodeExecutor {
         modelId: "free-multi-source-discovery-v1",
         billing: "free",
         estimatedCostCny: 0,
-        timeoutMs: 30_000,
+        timeoutMs: RESEARCH_NODE_TIMEOUT_MS,
       };
     }
     return this.fallback.plan?.(context) ?? {

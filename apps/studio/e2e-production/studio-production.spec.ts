@@ -122,7 +122,10 @@ test("a zero-cash original episode reaches the automatic production loop", async
   const run = bootstrap.runs.find((candidate) => candidate.title === title);
   expect(run).toBeTruthy();
   expect(run!.productionIntent?.maxCostCny).toBe(0);
-  expect(run!.nodes.some((node) => node.status === "succeeded")).toBe(true);
+  for (const nodeId of ["source-packet", "claim-ledger", "cast-plan", "episode-blueprint", "showrunner-assembly", "release-editorial", "visual-pack", "voice-casting", "music-cue-sheet"]) {
+    expect(run!.nodes.find((node) => node.id === nodeId)?.status, `${nodeId} should complete before paid voice generation`).toBe("succeeded");
+  }
+  expect(run!.executionReceipts.some((receipt) => receipt.errorMessage?.includes("节点执行超过"))).toBe(false);
   expect(run!.executionReceipts.every((receipt) => receipt.billing !== "metered" || receipt.actualCostCny === 0)).toBe(true);
   expect(runtime.pageErrors).toEqual([]);
   expect(runtime.failedApiRequests).toEqual([]);
@@ -130,19 +133,32 @@ test("a zero-cash original episode reaches the automatic production loop", async
 
 function observeRuntime(page: Page): { pageErrors: string[]; failedApiRequests: string[] } {
   const pageErrors: string[] = [];
-  const failedApiRequests: string[] = [];
+  const failedApiRequests = new Map<Request, string>();
   const responseStatuses = new WeakMap<Request, number>();
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  page.on("response", (response) => responseStatuses.set(response.request(), response.status()));
+  page.on("response", (response) => {
+    const request = response.request();
+    responseStatuses.set(request, response.status());
+    const recorded = failedApiRequests.get(request);
+    if (recorded?.endsWith(": net::ERR_ABORTED") && successfulReadAbort(request, response.status())) {
+      failedApiRequests.delete(request);
+    }
+  });
   page.on("requestfailed", (request) => {
     const path = new URL(request.url()).pathname;
     if (!path.includes("/api/")) return;
     const failure = request.failure()?.errorText ?? "failed";
-    // Chromium 在 HTTP Auth 下偶尔会把已返回 200 的 bootstrap 流标成取消；页面解析与显式 API 断言仍负责验证内容。
-    if (path === "/api/bootstrap" && failure === "net::ERR_ABORTED" && responseStatuses.get(request) === 200) return;
-    failedApiRequests.push(`${request.method()} ${request.url()}: ${failure}`);
+    if (failure === "net::ERR_ABORTED" && successfulReadAbort(request, responseStatuses.get(request))) return;
+    failedApiRequests.set(request, `${request.method()} ${request.url()}: ${failure}`);
   });
-  return { pageErrors, failedApiRequests };
+  return {
+    pageErrors,
+    get failedApiRequests() { return [...failedApiRequests.values()]; },
+  };
+}
+
+function successfulReadAbort(request: Request, status: number | undefined): boolean {
+  return request.method() === "GET" && status !== undefined && status >= 200 && status < 300;
 }
 
 function escapeRegExp(value: string): string {
@@ -155,7 +171,7 @@ interface ProductionBootstrap {
     id: string;
     title: string;
     productionIntent?: { maxCostCny: number };
-    executionReceipts: Array<{ billing: string; actualCostCny?: number }>;
+    executionReceipts: Array<{ billing: string; actualCostCny?: number; errorMessage?: string }>;
     nodes: Array<{ id: string; label: string; status: string }>;
   }>;
 }

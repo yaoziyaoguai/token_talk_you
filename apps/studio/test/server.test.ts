@@ -2040,6 +2040,44 @@ describe("Studio API", () => {
     await app.close();
   });
 
+  it("retries a free research deadline without spending a semantic repair round", async () => {
+    const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
+    const snapshot = await repository.load();
+    const candidate = agentLoopCandidate("candidate-research-deadline");
+    const run = createRunFromCandidate(candidate, {
+      id: "run-research-deadline",
+      opportunityId: "opportunity-research-deadline",
+      seriesId: snapshot.series[0]!.id,
+      recipeId: "rapid-topic-v1",
+      productionIntent: { hook: candidate.hook, targetMinutes: 20, musicPolicy: "minimal", budgetPolicy: "local", maxCostCny: 0 },
+      now: NOW,
+    });
+    run.nodes.forEach((node) => { node.status = "pending"; });
+    run.nodes.find((node) => node.id === "episode-opportunity")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "research-plan")!.status = "succeeded";
+    run.nodes.find((node) => node.id === "source-packet")!.status = "ready";
+    snapshot.runs.unshift(run);
+    await repository.save(snapshot);
+    const executedNodeIds: string[] = [];
+    const service = await StudioService.create(root, () => NOW, undefined, null, {
+      plan: () => ({ providerId: "free-research", modelId: "deadline-test", billing: "free", estimatedCostCny: 0, timeoutMs: 5 }),
+      execute: ({ node, signal }) => new Promise((_resolve, reject) => {
+        executedNodeIds.push(node.id);
+        const abort = () => reject(signal.reason);
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      }),
+    });
+
+    const result = await service.continueAgentLoop(run.id, undefined, 2);
+    const revised = await service.bootstrap();
+
+    expect(result.executedNodeIds).toEqual(["source-packet", "source-packet"]);
+    expect(executedNodeIds).toEqual(["source-packet", "source-packet"]);
+    expect(revised.runs.find((item) => item.id === run.id)?.executionReceipts.filter((receipt) => receipt.nodeId === "research-repair")).toHaveLength(0);
+    await service.close();
+  });
+
   it("rechecks Agent Loop cancellation inside the node claim lock", async () => {
     const repository = await JsonStudioRepository.open(root, () => createSeedSnapshot(NOW));
     const snapshot = await repository.load();

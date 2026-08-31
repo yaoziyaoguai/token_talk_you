@@ -994,8 +994,10 @@ export class StudioService {
       let selectedNode: WorkflowRun["nodes"][number] | undefined;
       let blocker: Pick<AgentLoopResult, "stoppedAtNodeId" | "reason"> | undefined;
       for (const candidate of availableNodes) {
+        if (candidate.id === "research-repair" && latestFreeResearchFailureWasDeadline(run)) continue;
         if (candidate.status === "failed") {
-          const dedicatedRepair = candidate.id === "source-packet"
+          const infrastructureRetry = candidate.id === "source-packet" && latestFreeResearchFailureWasDeadline(run);
+          const dedicatedRepair = candidate.id === "source-packet" && !infrastructureRetry
             ? run.nodes.find((node) => node.id === "research-repair")
             : undefined;
           if (dedicatedRepair && dedicatedRepair.status !== "succeeded") {
@@ -1006,7 +1008,7 @@ export class StudioService {
             }
             continue;
           }
-          if (failedAttempts(run, candidate.id) >= 3) {
+          if (!infrastructureRetry && failedAttempts(run, candidate.id) >= 3) {
             blocker ??= { stoppedAtNodeId: candidate.id, reason: "repair_limit" };
             continue;
           }
@@ -1261,6 +1263,13 @@ function completedAttempts(run: WorkflowRun, nodeId: string): number {
 function failedAttempts(run: WorkflowRun, nodeId: string): number {
   return run.executionReceipts.filter((receipt) =>
     receipt.nodeId === nodeId && (receipt.status === "failed" || receipt.status === "rejected")).length;
+}
+
+function latestFreeResearchFailureWasDeadline(run: WorkflowRun): boolean {
+  const receipt = [...run.executionReceipts].reverse().find((candidate) => candidate.nodeId === "source-packet");
+  return receipt?.billing === "free"
+    && receipt.status === "failed"
+    && /^节点执行超过 \d+ms$/.test(receipt.errorMessage ?? "");
 }
 
 function boundedLoopAttempts(run: WorkflowRun, node: WorkflowRun["nodes"][number]): number {

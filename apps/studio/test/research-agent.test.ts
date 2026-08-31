@@ -259,6 +259,19 @@ describe("free research providers", () => {
 });
 
 describe("ResearchNodeExecutor", () => {
+  it("budgets enough time for sequential multi-query discovery and source verification", () => {
+    const run = createSeedSnapshot(NOW).runs[0];
+    const node = run?.nodes.find((candidate) => candidate.id === "source-packet");
+    if (!run || !node) throw new Error("source node missing");
+    const executor = new ResearchNodeExecutor(new FreeResearchGateway([], () => NOW), { execute: vi.fn() }, () => NOW);
+
+    expect(executor.plan({ run, node })).toMatchObject({
+      providerId: "research-agent-orchestrator",
+      billing: "free",
+      timeoutMs: 120_000,
+    });
+  });
+
   it("forwards obsolete fallback media cleanup through the outer research wrapper", async () => {
     const run = createSeedSnapshot(NOW).runs[0];
     const node = run?.nodes.find((candidate) => candidate.id === "audio-mix");
