@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Request } from "@playwright/test";
 
 test("all production work surfaces remain usable through the public ingress", async ({ page }, testInfo) => {
   const runtime = observeRuntime(page);
@@ -131,11 +131,16 @@ test("a zero-cash original episode reaches the automatic production loop", async
 function observeRuntime(page: Page): { pageErrors: string[]; failedApiRequests: string[] } {
   const pageErrors: string[] = [];
   const failedApiRequests: string[] = [];
+  const responseStatuses = new WeakMap<Request, number>();
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("response", (response) => responseStatuses.set(response.request(), response.status()));
   page.on("requestfailed", (request) => {
-    if (new URL(request.url()).pathname.includes("/api/")) {
-      failedApiRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText ?? "failed"}`);
-    }
+    const path = new URL(request.url()).pathname;
+    if (!path.includes("/api/")) return;
+    const failure = request.failure()?.errorText ?? "failed";
+    // Chromium 在 HTTP Auth 下偶尔会把已返回 200 的 bootstrap 流标成取消；页面解析与显式 API 断言仍负责验证内容。
+    if (path === "/api/bootstrap" && failure === "net::ERR_ABORTED" && responseStatuses.get(request) === 200) return;
+    failedApiRequests.push(`${request.method()} ${request.url()}: ${failure}`);
   });
   return { pageErrors, failedApiRequests };
 }
